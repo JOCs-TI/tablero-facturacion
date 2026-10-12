@@ -1,9 +1,10 @@
 import math
-import re
 import unicodedata
 from collections import namedtuple
+from io import BytesIO
 import altair as alt
 import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from pathlib import Path
@@ -20,20 +21,19 @@ st.set_page_config(
 BASE = Path(__file__).parent
 LOGO_PATH = BASE / "imagenes" / "jocs_logo.png"
 
-# Ruta relativa: en este repo de despliegue el Excel vive dentro de EXCEL/, a
-# diferencia del desarrollo local que lee de C:\Reportes\EXCEL (fuera de Drive).
-EXCEL_DIR = BASE / "EXCEL"
-# Se leen los archivos cuyo nombre contiene "carga aerea" (ej. "base de prueba agosto
-# carga aerea.xlsx"). El mes sale del nombre; de cada archivo SOLO se usan las hojas
-# 'emitidas' y 'recibidas' (el resto de las hojas del libro se ignora a proposito).
-ARCHIVO_CLAVE = "carga aerea"
+# Fuente de datos: Google Sheets en vivo (antes: Excel local, que vivia fuera de
+# Google Drive porque los .xlsx sincronizados se corrompian solos). La hoja esta
+# compartida como "cualquiera con el link" (solo lectura), lo que permite
+# descargarla como .xlsx sin API key ni cuenta de servicio.
+SHEET_ID = "1F-b12XUlASAXNnhgYm5G-PRB46s2Ms9RjJ3j6Rj_QVU"
+SHEET_EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
+# De cada libro SOLO se usan las hojas 'emitidas' y 'recibidas' (el resto se ignora
+# a proposito; ver load_sueldos/load_corresponsalias/load_honorarios_josefa/
+# load_costos_referencia mas abajo para las otras 4 que si se leen).
 HOJAS_USADAS = {"emitidas": "EMITIDA", "recibidas": "RECIBIDA"}
 
 MESES = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
          7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
-MESES_NOMBRE = {"enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
-                "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
-                "noviembre": 11, "diciembre": 12}
 
 # namedtuple de modulo (no el de itertuples(), que es una clase dinamica y
 # st.cache_data no la puede serializar con pickle).
@@ -247,25 +247,44 @@ def waterfall_chart(df_in, label_col, valor_col, color_pos, color_neg, color_tot
     return (barras + etiq).properties(height=height)
 
 # ── Descubrimiento de archivos ──────────────────────────────────────────────────
-def _sin_acentos(s):
-    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+@st.cache_data(ttl=300, show_spinner="Descargando datos de Google Sheets...")
+def _descargar_libro_sheets():
+    resp = requests.get(SHEET_EXPORT_URL, timeout=30)
+    resp.raise_for_status()
+    return resp.content
+
+def _detectar_periodo(xl):
+    """El libro de Sheets no trae nombre de archivo (ahi antes salia el mes/año);
+    se detecta leyendo las propias hojas: mes de 'sueldos'/'MES NO.', año de la
+    primera fecha real que se encuentre. Si no hay nada, cae en la fecha de hoy."""
+    hojas = {h.strip().lower(): h for h in xl.sheet_names}
+    mes = None
+    if "sueldos" in hojas:
+        df = xl.parse(hojas["sueldos"], header=0)
+        df.columns = [str(c).strip() for c in df.columns]
+        if "MES NO." in df.columns:
+            vals = pd.to_numeric(df["MES NO."], errors="coerce").dropna()
+            if len(vals):
+                mes = int(vals.mode().iloc[0])
+    anio = None
+    for hoja_lc, col in [("corresponsalias", "Attribute:Fecha"),
+                         ("honorarios josefa", "Fecha"),
+                         ("costos de referencia", "Fecha Pago Pedimento")]:
+        if hoja_lc in hojas:
+            df = xl.parse(hojas[hoja_lc], header=0)
+            df.columns = [str(c).strip() for c in df.columns]
+            if col in df.columns:
+                fechas = pd.to_datetime(df[col], errors="coerce").dropna()
+                if len(fechas):
+                    anio = int(fechas.dt.year.mode().iloc[0])
+                    break
+    hoy = pd.Timestamp.now()
+    return anio or hoy.year, mes or hoy.month
 
 def descubrir_archivos():
-    archivos = []
-    if not EXCEL_DIR.exists():
-        return archivos
-    for p in EXCEL_DIR.glob("*.xlsx"):
-        if p.name.startswith("~$"):
-            continue
-        nombre = _sin_acentos(p.stem)
-        if ARCHIVO_CLAVE not in nombre:
-            continue
-        mes = next((n for nom, n in MESES_NOMBRE.items() if nom in nombre), None)
-        m_anio = re.search(r"(20\d{2})", nombre)
-        anio = int(m_anio.group(1)) if m_anio else pd.Timestamp(p.stat().st_mtime, unit="s").year
-        archivos.append((anio, mes or 0, p))
-    archivos.sort()
-    return archivos
+    contenido = _descargar_libro_sheets()
+    anio, mes = _detectar_periodo(pd.ExcelFile(BytesIO(contenido)))
+    return [(anio, mes, BytesIO(contenido))]
 
 def leer_hoja(path, hoja, tipo_factura):
     df = pd.read_excel(path, sheet_name=hoja, header=0)
@@ -352,6 +371,12 @@ COLS_NOMINA = [
     ("Excedente (lira)", "Excedente"),
     ("Provisiones", "Provisiones (+/-)"),
 ]
+# Variantes sin acento de las mismas columnas: la copia en Google Sheets las trae
+# así (se corrigió ahí un acento que llegó dañado, pero sin volver a ponerle tilde).
+ALIAS_NOMINA = {
+    "Total cuotas patrón (N)": "Total cuotas patron (N)",
+    "Comisión (lira)": "Comision (lira)",
+}
 
 def _hoja_generica(hojas_cache, path, nombre_hoja):
     """Busca una hoja por nombre (case-insensitive); None si el archivo no la trae."""
@@ -376,7 +401,8 @@ def load_sueldos():
         out["nombre"] = coalesce_col(df, "NOMBRE BIEN", "NOMBRE").map(norm_txt)
         out["aduana"] = coalesce_col(df, "Departamento").map(_normaliza_aduana)
         for col_src, _ in COLS_NOMINA:
-            out[col_src] = pd.to_numeric(coalesce_col(df, col_src), errors="coerce").fillna(0.0)
+            candidatos = (col_src, ALIAS_NOMINA[col_src]) if col_src in ALIAS_NOMINA else (col_src,)
+            out[col_src] = pd.to_numeric(coalesce_col(df, *candidatos), errors="coerce").fillna(0.0)
         out["total"] = pd.to_numeric(coalesce_col(df, "TOTAL2", "Total"), errors="coerce").fillna(0.0)
         out = out[out["nombre"].notna() & (out["total"] != 0)].copy()
         out["aduana"] = out["aduana"].fillna("SIN ADUANA")
@@ -456,14 +482,13 @@ try:
     josefa_df = load_honorarios_josefa()
     costos_ref_df = load_costos_referencia()
 except Exception as e:
-    st.error(f"Error al abrir los archivos de facturación:\n\n`{EXCEL_DIR}`\n\n{e}")
+    st.error(f"Error al descargar/leer los datos de Google Sheets:\n\n`{SHEET_EXPORT_URL}`\n\n{e}")
     st.stop()
 
 if df.empty:
     st.error(
-        "No se encontraron archivos de facturación. Se esperan archivos cuyo nombre "
-        "contenga `carga aerea` (ej. `base de prueba agosto carga aerea.xlsx`), con hojas "
-        f"`emitidas` y `recibidas`, en:\n\n`{EXCEL_DIR}`"
+        "El Google Sheets se descargó pero no se encontraron hojas `emitidas`/`recibidas` "
+        f"con datos.\n\n`{SHEET_EXPORT_URL}`"
     )
     st.stop()
 
@@ -1200,6 +1225,15 @@ if pagina == "Modelo y Originación":
 if pagina == "Nómina":
     st.title("Nómina (Capital Humano)")
     st.caption(f"{', '.join(sel_labels)} · Nómina real por empleado (hoja 'sueldos')")
+    st.warning(
+        "**Cuotas Patronales en revisión**: tras conectar esta pestaña a Google Sheets "
+        "(2026-10-12) se detectó que la columna 'Cuotas Patronales' llega sistemáticamente "
+        "más baja que en el Excel original (la proporción varía por empleado, así que no es "
+        "un ajuste fijo que se pueda corregir aquí) — probablemente una fórmula que no se "
+        "recalculó igual al pasar el archivo a Sheets. El resto de los componentes de la "
+        "nómina sí coincide exacto. Esta cifra (y por lo tanto el Total Nómina) puede estar "
+        "subestimada hasta que se revise la fórmula de esa columna en el Sheets."
+    )
 
     if sueldos_f.empty:
         st.info("Sin datos de nómina para el periodo y aduana seleccionados.")
