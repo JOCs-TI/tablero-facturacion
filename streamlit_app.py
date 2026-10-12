@@ -289,11 +289,16 @@ def leer_hoja(path, hoja, tipo_factura):
     out["sin_monto"] = monto.isna() & importe_bruto.notna()
     out["importe_sin_monto"] = importe_bruto.where(out["sin_monto"], 0.0)
 
+    # "if s else" (en vez de isinstance) se ve bien en pandas 2.x pero truena en
+    # pandas 3.x: ahi un .map() encadenado puede devolver los faltantes como NaN
+    # (float) en lugar de None, y NaN es "verdadero" en Python (no es falsy) —
+    # el guard no lo detecta y revienta en .upper(). isinstance() no depende de
+    # como pandas represente el faltante.
     aduana = coalesce_col(df, "aduana").map(norm_txt)
-    out["aduana"] = aduana.map(lambda s: s.upper() if s else "SIN ADUANA")
+    out["aduana"] = aduana.map(lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
     out["cc"] = coalesce_col(df, "cc")
     tipo_cc = coalesce_col(df, "tipo").map(norm_txt)
-    out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if s else "SIN TIPO")
+    out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
     out["concepto_cierre"] = coalesce_col(df, "concepto para cierre").map(norm_txt)
 
     out["tipo_factura"] = tipo_factura
