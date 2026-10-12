@@ -1,0 +1,14 @@
+[theme]
+# Tema claro de marca JOCS (no el navy oscuro de los tableros Ancora): el logo
+# real (imagenes/jocs_logo.png) tiene fondo blanco solido, sin version oscura.
+base = "light"
+primaryColor = "#244072"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F2F4F7"
+textColor = "#1C2530"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+headless = true
