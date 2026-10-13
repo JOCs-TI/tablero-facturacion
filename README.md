@@ -11,8 +11,8 @@ y Simulación Visual.docx`.
 |---|---|
 | Utilidad Operativa | Cascada Ingresos→Honorarios AA→Sueldos→Gastos→Utilidad Operativa, barras + ficha de detalle por aduana, Pareto de Utilidad Operativa (todo CC), Costos de Originación (Honorarios Josefa + Costos de Referencia) |
 | Gastos por Concepto | Dona de gasto (o ingreso) por concepto, una aduana a la vez, con drilldown de proveedores/clientes |
-| Nómina | Treemap de 3 niveles con drill-down: aduanas → empleados de la aduana → componentes de su percepción |
-| Tarjeta de Crédito | Pendiente de datos — necesita hojas de movimientos AMEX (Alejandro y Josefa) que aún no están en el Sheets |
+| Nómina | Treemap de 3 niveles con drill-down **por clic real** (no selectbox): aduanas → empleados de la aduana → componentes de su percepción |
+| Tarjeta de Crédito | Pendiente de construir — las hojas de movimientos AMEX (Alejandro y Josefa) ya están en el Sheets, falta la página |
 
 Reestructurado a estas 4 pestañas el 2026-10-13 siguiendo un PDF de referencia
 del usuario (antes había 6: Panorama, Gastos por Concepto, Por Aduana
@@ -29,9 +29,19 @@ cargando React/ReactDOM/Recharts desde unpkg y armando el árbol con
 `React.createElement` (sin JSX, para no tener que compilar con Babel en el
 navegador en cada rerun). Helpers en `app_facturacion.py`:
 `recharts_component()`, `waterfall_recharts()`, `bar_h_recharts()`,
-`radar_recharts()`, `pareto_recharts()`, `treemap_recharts()` (este último usa
-el componente nativo `Treemap` de Recharts). Cada gráfica vive en su propio
-iframe aislado, sin estado compartido con Streamlit ni entre gráficas.
+`radar_recharts()`, `pareto_recharts()`. Cada gráfica vive en su propio iframe
+aislado, sin estado compartido con Streamlit ni entre gráficas.
+
+**El treemap de Nómina es distinto**: necesita devolver a Python *qué caja se
+clicó* (para el drill-down), y `st.components.v1.html()` es de una sola vía
+(Python → HTML, sin retorno). Por eso usa un **componente real de Streamlit**
+(`components.declare_component`, en `components/treemap_click/`) con un
+puente mínimo al protocolo de Streamlit Components escrito a mano
+(`componentReady`/`setComponentValue`/`setFrameHeight` vía `postMessage`, sin
+la librería `streamlit-component-lib`) — es un solo archivo HTML estático, sin
+build ni npm. `treemap_click_recharts()` es el wrapper en Python; la página de
+Nómina guarda la selección en `st.session_state` (`nom_aduana`, `nom_empleado`)
+y hace `st.rerun()` al detectar un clic nuevo.
 
 **La dona de "Gastos por Concepto" se quedó en Altair** (`tema()`, `alt.Chart`
 inline en la página): la versión en Recharts (`PieChart`) se veía mal
@@ -63,10 +73,17 @@ servicio de Google Cloud, pero la organización `jocs.com.mx` bloquea la
 creación de llaves de cuentas de servicio por política; de ahí el cambio a
 link público de solo lectura.
 
-Se usan 7 de las pestañas del libro: `emitidas`, `recibidas`, `sueldos`,
+Se usan 6 de las pestañas del libro: `emitidas`, `recibidas`, `sueldos`,
 `honorarios josefa`, `costos de referencia`, `UTILIDAD OPERATIVA`. El resto
 (`corresponsalias` -- ya no se usa tras el rediseño a 4 pestañas --, `reglas`,
-`CC`, `Aduanas`, `imile laredo`) no se usa todavía.
+`CC`, `Aduanas`, `imile laredo`) no se usa todavía. **`AMEX ALEJANDRO` y `AMEX
+JOSEFA` ya están en el Sheets** (agregadas 2026-10-13) pero la pestaña "Tarjeta
+de Crédito" que las va a usar todavía no está construida — ver el aviso en esa
+página. Ojo con la calidad de esas 2 hojas: columnas inconsistentes entre
+ambas (Alejandro trae `uuid` dedicado; Josefa no tiene esa columna y sus UUIDs
+terminan en `Unnamed: 10`, mezclados con notas de texto libre como "11.96
+DOLARES") y el nombre de Josefa llega con un acento dañado
+(`JOSEFA PATRICIA MAGA=A R`, debería decir "MAGAÑA").
 
 Cosas que hay que saber:
 
