@@ -28,8 +28,8 @@ LOGO_PATH = BASE / "imagenes" / "jocs_logo.png"
 SHEET_ID = "1F-b12XUlASAXNnhgYm5G-PRB46s2Ms9RjJ3j6Rj_QVU"
 SHEET_EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
 # De cada libro SOLO se usan las hojas 'emitidas' y 'recibidas' (el resto se ignora
-# a proposito; ver load_sueldos/load_corresponsalias/load_honorarios_josefa/
-# load_costos_referencia mas abajo para las otras 4 que si se leen).
+# a proposito; ver load_sueldos/load_honorarios_josefa/load_costos_referencia/
+# load_utilidad_operativa mas abajo para las otras hojas que si se leen).
 HOJAS_USADAS = {"emitidas": "EMITIDA", "recibidas": "RECIBIDA"}
 
 MESES = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
@@ -173,43 +173,102 @@ def donut_chart(valores, height=360, colores=None, mostrar_leyenda=True, etiquet
     )
     return (arcos + texto).properties(height=height)
 
-def pareto_chart(serie, color, height=420, umbral=0.8):
-    """Barras descendentes + linea de % acumulado (analisis Pareto 80/20)."""
-    df = serie.sort_values(ascending=False).rename("valor").reset_index()
-    df.columns = ["label", "valor"]
-    tot = df["valor"].sum() or 1.0
-    df["acumulado"] = df["valor"].cumsum() / tot
-    df["etiqueta"] = df["valor"].map(fmt_m)
-    df["acum_txt"] = (df["acumulado"] * 100).map(lambda v: f"{v:.0f}%")
-    orden = df["label"].tolist()
+def _squarify(valores, x, y, w, h):
+    """Layout de treemap 'squarified' (Bruls, Huizing, van Wijk 2000): reparte el
+    rectangulo (x,y,w,h) entre 'valores' (positivos) en cajas lo mas cuadradas
+    posible -- sin esto, un treemap con muchos elementos sale en tiras angostas
+    e ilegibles. Sin libreria externa (es el mismo algoritmo que usa 'squarify' de
+    PyPI, en ~25 lineas)."""
+    valores = [v for v in valores if v > 0]
+    if not valores:
+        return []
+    total = sum(valores)
+    escala = (w * h) / total
+    vals = [v * escala for v in valores]
 
-    barras = alt.Chart(df).mark_bar(color=color, cornerRadiusTopLeft=3,
-                                    cornerRadiusTopRight=3).encode(
-        x=alt.X("label:N", title=None, sort=orden, axis=alt.Axis(labelAngle=-30)),
-        y=alt.Y("valor:Q", title=None, axis=eje_dinero()),
-        tooltip=[alt.Tooltip("label:N", title=""), alt.Tooltip("etiqueta:N", title="Monto"),
-                 alt.Tooltip("acum_txt:N", title="Acumulado")],
+    def peor_aspecto(fila, lado):
+        s, mx, mn = sum(fila), max(fila), min(fila)
+        return max((lado * lado * mx) / (s * s), (s * s) / (lado * lado * mn))
+
+    rects, resto = [], vals[:]
+    cx, cy, cw, ch = x, y, w, h
+    while resto:
+        lado = min(cw, ch)
+        fila = [resto[0]]
+        while (len(resto) > len(fila)
+               and peor_aspecto(fila + [resto[len(fila)]], lado) <= peor_aspecto(fila, lado)):
+            fila.append(resto[len(fila)])
+        resto = resto[len(fila):]
+        fila_total = sum(fila)
+        # El lado fijo de la fila es el mas corto del rectangulo restante (= 'lado'
+        # de arriba): si el rectangulo es mas ancho que alto, la fila es una
+        # COLUMNA vertical (abarca todo el alto 'ch'); si es mas alto que ancho,
+        # la fila es una banda horizontal (abarca todo el ancho 'cw'). Al reves
+        # de esto, las cajas salen en tiras angostas de ancho/alto completo.
+        if cw >= ch:
+            ancho_fila = fila_total / ch if ch else 0
+            ay = cy
+            for v in fila:
+                alto = v / ancho_fila if ancho_fila else 0
+                rects.append((cx, ay, cx + ancho_fila, ay + alto))
+                ay += alto
+            cx, cw = cx + ancho_fila, cw - ancho_fila
+        else:
+            alto_fila = fila_total / cw if cw else 0
+            ax = cx
+            for v in fila:
+                ancho = v / alto_fila if alto_fila else 0
+                rects.append((ax, cy, ax + ancho, cy + alto_fila))
+                ax += ancho
+            cy, ch = cy + alto_fila, ch - alto_fila
+    return rects
+
+def treemap_chart(serie, height=360, w_layout=900.0, colores=None, formateador=fmt_m,
+                  valores_reales=None):
+    """Treemap: cada caja es proporcional al valor (layout '_squarify' de arriba).
+    'serie' indexada por etiqueta, valores positivos; una sola caja por índice
+    repetido se pierde (usar .groupby(...).sum() antes si hace falta).
+    'valores_reales' (opcional, mismo índice que 'serie'): cuando 'serie' ya viene
+    en valor absoluto porque el componente real puede ser negativo (el área de una
+    caja no puede serlo), aquí se pasa el monto con signo real para la etiqueta y
+    para colorear azul/rojo según el signo."""
+    s = serie[serie > 0].sort_values(ascending=False)
+    if s.empty:
+        return None
+    rects = _squarify(s.tolist(), 0.0, 0.0, w_layout, float(height))
+    df = pd.DataFrame(rects, columns=["x0", "y0", "x1", "y1"])
+    df["label"] = s.index.tolist()
+    df["valor"] = (valores_reales.reindex(s.index).values if valores_reales is not None else s.values)
+    df["etiqueta"] = df["valor"].map(formateador)
+    df["xc"] = (df["x0"] + df["x1"]) / 2
+    df["yc"] = (df["y0"] + df["y1"]) / 2
+    df["w"], df["h"] = df["x1"] - df["x0"], df["y1"] - df["y0"]
+    if colores is not None:
+        df["color"] = colores
+    elif valores_reales is not None:
+        df["color"] = df["valor"].map(lambda v: JOCS_AZUL if v >= 0 else C_NEG)
+    else:
+        df["color"] = [color_for(i) for i in range(len(df))]
+    df["texto"] = df.apply(
+        lambda r: f"{r['label']}" if r["w"] > 90 and r["h"] > 34 else "", axis=1)
+    df["texto_valor"] = df.apply(
+        lambda r: r["etiqueta"] if r["w"] > 90 and r["h"] > 50 else "", axis=1)
+
+    escala_xy = {"x": alt.Scale(domain=[0, w_layout]), "y": alt.Scale(domain=[height, 0])}
+    cajas = alt.Chart(df).mark_rect(stroke="#FFFFFF", strokeWidth=2, cornerRadius=4).encode(
+        x=alt.X("x0:Q", axis=None, scale=escala_xy["x"]), x2="x1:Q",
+        y=alt.Y("y0:Q", axis=None, scale=escala_xy["y"]), y2="y1:Q",
+        color=alt.Color("color:N", scale=None, legend=None),
+        tooltip=[alt.Tooltip("label:N", title=""), alt.Tooltip("etiqueta:N", title="Monto")],
     )
-    etiq = alt.Chart(df).mark_text(dy=-10, fontSize=10, color="#3d4752").encode(
-        x=alt.X("label:N", sort=orden), y="valor:Q", text="etiqueta:N",
+    etiq_label = alt.Chart(df).mark_text(fontSize=11, fontWeight=600, color="#FFFFFF", dy=-7).encode(
+        x=alt.X("xc:Q", scale=escala_xy["x"]), y=alt.Y("yc:Q", scale=escala_xy["y"]), text="texto:N",
     )
-    linea = alt.Chart(df).mark_line(color=C_MARGEN, strokeWidth=2.5,
-                                    point=alt.OverlayMarkDef(filled=True, size=55, color=C_MARGEN)).encode(
-        x=alt.X("label:N", sort=orden),
-        y=alt.Y("acumulado:Q", title=None, axis=alt.Axis(format=".0%", orient="right"),
-                scale=alt.Scale(domain=[0, 1.05])),
+    etiq_valor = alt.Chart(df).mark_text(fontSize=10, color="#FFFFFF", dy=8, opacity=0.9).encode(
+        x=alt.X("xc:Q", scale=escala_xy["x"]), y=alt.Y("yc:Q", scale=escala_xy["y"]),
+        text="texto_valor:N",
     )
-    etiq_acum = alt.Chart(df).mark_text(dy=-10, fontSize=10, fontWeight=600, color=C_MARGEN).encode(
-        x=alt.X("label:N", sort=orden), y=alt.Y("acumulado:Q", scale=alt.Scale(domain=[0, 1.05])),
-        text="acum_txt:N",
-    )
-    umbral_df = pd.DataFrame({"y": [umbral]})
-    linea_umbral = alt.Chart(umbral_df).mark_rule(color=C_NEG, strokeDash=[4, 3], strokeWidth=1.5).encode(
-        y=alt.Y("y:Q", scale=alt.Scale(domain=[0, 1.05])),
-    )
-    barras_layer = alt.layer(barras, etiq).properties(height=height)
-    linea_layer = alt.layer(linea_umbral, linea, etiq_acum).properties(height=height)
-    return alt.layer(barras_layer, linea_layer).resolve_scale(y="independent")
+    return (cajas + etiq_label + etiq_valor).properties(height=height)
 
 def waterfall_chart(df_in, label_col, valor_col, color_pos, color_neg, color_total,
                     total_label="TOTAL", height=380):
@@ -411,28 +470,6 @@ def load_sueldos():
     return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
 
 @st.cache_data(show_spinner=False)
-def load_corresponsalias():
-    """Gasto de corresponsalías (hoja 'corresponsalias'): facturas recibidas de
-    agencias aduanales corresponsales en otras aduanas."""
-    partes = []
-    for anio, mes, path in descubrir_archivos():
-        etiqueta = f"{MESES[mes]} {anio}" if mes else path.stem
-        hojas = {h.strip().lower(): h for h in pd.ExcelFile(path).sheet_names}
-        if "corresponsalias" not in hojas:
-            continue
-        df = pd.read_excel(path, sheet_name=hojas["corresponsalias"], header=0)
-        df.columns = [str(c).strip() for c in df.columns]
-        out = pd.DataFrame(index=df.index)
-        out["proveedor"] = coalesce_col(df, "Emisor.Attribute:Nombre").map(norm_txt)
-        out["aduana"] = coalesce_col(df, "ADUANA").map(_normaliza_aduana)
-        out["monto"] = pd.to_numeric(coalesce_col(df, "Attribute:Total"), errors="coerce").fillna(0.0)
-        out = out[out["monto"] != 0].copy()
-        out["aduana"] = out["aduana"].fillna("SIN ADUANA")
-        out["anio"], out["mes"], out["periodo_label"] = anio, mes, etiqueta
-        partes.append(out)
-    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
-
-@st.cache_data(show_spinner=False)
 def load_honorarios_josefa():
     """Ingreso por honorarios de asesoría aduanal (hoja 'honorarios josefa')."""
     partes = []
@@ -508,7 +545,6 @@ def load_utilidad_operativa():
 try:
     df, periodos = load_data()
     sueldos_df = load_sueldos()
-    corres_df = load_corresponsalias()
     josefa_df = load_honorarios_josefa()
     costos_ref_df = load_costos_referencia()
     utilidad_op_df = load_utilidad_operativa()
@@ -575,8 +611,7 @@ with st.sidebar:
     st.caption("TABLEROS")
     pagina = st.radio(
         "",
-        ["Panorama", "Gastos por Concepto", "Por Aduana (Rentabilidad)",
-         "Modelo y Originación", "Nómina", "Detalle de Facturas"],
+        ["Utilidad Operativa", "Gastos por Concepto", "Nómina", "Tarjeta de Crédito"],
         label_visibility="collapsed",
         key="nav",
     )
@@ -600,7 +635,7 @@ with st.sidebar:
 def _filtra_periodo_aduana(data):
     """Aplica el filtro global de Periodo + Aduana del sidebar a cualquier
     dataframe que traiga columnas 'periodo_label' y 'aduana' (nomina,
-    corresponsalias, honorarios, costos de referencia)."""
+    honorarios, costos de referencia, utilidad operativa)."""
     if data.empty:
         return data
     out = data[data["periodo_label"].isin(sel_labels)]
@@ -622,7 +657,6 @@ monto_cancel = dff.loc[dff["cancelada"], "importe"].sum()
 d = dff[~dff["cancelada"] & ~dff["sin_monto"]].copy()
 
 sueldos_f = _filtra_periodo_aduana(sueldos_df)
-corres_f = _filtra_periodo_aduana(corres_df)
 josefa_f = _filtra_periodo_aduana(josefa_df)
 costos_ref_f = _filtra_periodo_aduana(costos_ref_df)
 utilidad_op_f = _filtra_periodo_aduana(utilidad_op_df)
@@ -645,8 +679,8 @@ importe_sin_monto = sm["importe_sin_monto"].sum()
 # ══════════════════════════════════════════════════════════════════════════════
 # PANORAMA
 # ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Panorama":
-    st.title("Facturación Emitida y Recibida")
+if pagina == "Utilidad Operativa":
+    st.title("Utilidad Operativa")
     st.caption(f"{', '.join(sel_labels)} · Importes en MXN" + (" · Solo PROPIOS" if SOLO_PROPIOS else ""))
 
     if n_cancel:
@@ -662,7 +696,9 @@ if pagina == "Panorama":
         st.caption(f"{n_sin_monto:,} líneas traen importe pero no monto en el Excel "
                    f"({fmt(importe_sin_monto)} de importe) y no se suman a las cifras.")
 
-    if not utilidad_op_f.empty:
+    if utilidad_op_f.empty:
+        st.info("Sin datos de Utilidad Operativa para el periodo y aduana seleccionados.")
+    else:
         st.divider()
         st.subheader("Utilidad Operativa")
         st.caption("Utilidad Operativa = Ingresos + Honorarios AA − Sueldos − Gastos "
@@ -677,141 +713,123 @@ if pagina == "Panorama":
                                      total_label="Utilidad Operativa", height=400)
         st.altair_chart(tema(cascada_uo), use_container_width=True)
 
-    st.divider()
-    st.subheader("Emitida vs Recibida por mes")
-    g = d.groupby(["periodo", "periodo_label", "tipo_factura"], as_index=False)["importe"].sum()
-    orden_periodos = [p.periodo_label for p in periodos if p.periodo_label in sel_labels]
-    em_serie = [g.loc[(g.periodo_label == pl) & (g.tipo_factura == "EMITIDA"), "importe"].sum()
-                for pl in orden_periodos]
-    rec_serie = [g.loc[(g.periodo_label == pl) & (g.tipo_factura == "RECIBIDA"), "importe"].sum()
-                 for pl in orden_periodos]
-    margen_serie = [e - r for e, r in zip(em_serie, rec_serie)]
-
-    df_mes = pd.DataFrame({
-        "periodo": orden_periodos * 2,
-        "serie": ["Emitida"] * len(orden_periodos) + ["Recibida"] * len(orden_periodos),
-        "valor": em_serie + rec_serie,
-    })
-    df_mes["etiqueta"] = df_mes["valor"].map(fmt_m)
-    df_margen = pd.DataFrame({"periodo": orden_periodos, "margen": margen_serie})
-    df_margen["etiqueta"] = df_margen["margen"].map(fmt_m)
-
-    barras = alt.Chart(df_mes).mark_bar(size=32, cornerRadiusTopLeft=4, cornerRadiusTopRight=4).encode(
-        x=alt.X("periodo:N", title=None, sort=orden_periodos, axis=alt.Axis(labelAngle=0)),
-        xOffset=alt.XOffset("serie:N", sort=["Emitida", "Recibida"]),
-        y=alt.Y("valor:Q", title=None, axis=eje_dinero()),
-        color=alt.Color("serie:N", title=None,
-                        scale=alt.Scale(domain=["Emitida", "Recibida"], range=[C_EMITIDA, C_RECIBIDA]),
-                        legend=alt.Legend(orient="top", direction="horizontal")),
-        tooltip=[alt.Tooltip("periodo:N", title="Mes"), alt.Tooltip("serie:N", title="Serie"),
-                 alt.Tooltip("etiqueta:N", title="Monto")],
-    )
-    etiq_barras = alt.Chart(df_mes).mark_text(dy=-10, fontSize=11, color="#3d4752").encode(
-        x=alt.X("periodo:N", sort=orden_periodos),
-        xOffset=alt.XOffset("serie:N", sort=["Emitida", "Recibida"]),
-        y="valor:Q", text="etiqueta:N",
-    )
-    linea_margen = alt.Chart(df_margen).mark_line(
-        color=C_MARGEN, strokeWidth=3,
-        point=alt.OverlayMarkDef(filled=True, size=80, color=C_MARGEN),
-    ).encode(
-        x=alt.X("periodo:N", sort=orden_periodos),
-        y=alt.Y("margen:Q"),
-        tooltip=[alt.Tooltip("periodo:N", title="Mes"), alt.Tooltip("etiqueta:N", title="Margen")],
-    )
-    etiq_margen = alt.Chart(df_margen).mark_text(dy=-12, fontSize=11, fontWeight=600, color=C_MARGEN).encode(
-        x=alt.X("periodo:N", sort=orden_periodos), y="margen:Q", text="etiqueta:N",
-    )
-    chart = (barras + etiq_barras + linea_margen + etiq_margen).properties(height=420)
-    st.altair_chart(tema(chart), use_container_width=True)
-
-    if not SOLO_PROPIOS:
         st.divider()
-        col_a, col_b = st.columns(2)
-        with col_a:
-            st.subheader("Propios vs Terceros · Emitida")
-            vals = EM.groupby("tipo_cc")["importe"].sum()
-            vals = vals[vals > 0]
-            if len(vals):
-                st.altair_chart(tema(donut_chart(vals, height=360)), use_container_width=True)
-            else:
-                st.info("Sin datos.")
-        with col_b:
-            st.subheader("Propios vs Terceros · Recibida")
-            vals = REC.groupby("tipo_cc")["importe"].sum()
-            vals = vals[vals > 0]
-            if len(vals):
-                st.altair_chart(tema(donut_chart(vals, height=360)), use_container_width=True)
-            else:
-                st.info("Sin datos.")
+        st.subheader("Utilidad Operativa por Aduana")
+        uo_ad = utilidad_op_f.groupby("aduana")[["INGRESOS", "HONORARIOS AA", "SUELDOS",
+                                                 "GASTOS", "utilidad"]].sum()
+        em_por_ad = EM.groupby("aduana")["importe"].sum()
+        rec_por_ad = REC.groupby("aduana")["importe"].sum()
+        aduanas_uo = uo_ad.sort_values("utilidad", ascending=False).index.tolist()
 
-    st.divider()
-    st.subheader("Centros de Costo · Emitidas vs Recibidas")
-    claves_cc_pan = ["cc", "aduana"]
-    em_cc_pan = d[d["tipo_factura"] == "EMITIDA"].groupby(claves_cc_pan)["importe"].sum().rename("em")
-    rec_cc_pan = d[d["tipo_factura"] == "RECIBIDA"].groupby(claves_cc_pan)["importe"].sum().rename("rec")
-    cc_pan = pd.concat([em_cc_pan, rec_cc_pan], axis=1).fillna(0.0).reset_index()
-    cc_pan["etiq"] = cc_pan.apply(
-        lambda r: ("Sin CC" if pd.isna(r["cc"]) else str(int(r["cc"]))) + f" · {r['aduana']}", axis=1)
-    cc_pan["total"] = cc_pan["em"] + cc_pan["rec"]
-    cc_pan = cc_pan.nlargest(12, "total").sort_values("total", ascending=False)
-    if len(cc_pan):
-        df_cc_pan = pd.concat([
-            pd.DataFrame({"cc": cc_pan["etiq"], "serie": "Emitida", "valor": cc_pan["em"]}),
-            pd.DataFrame({"cc": cc_pan["etiq"], "serie": "Recibida", "valor": cc_pan["rec"]}),
-        ], ignore_index=True)
-        df_cc_pan["etiqueta"] = df_cc_pan["valor"].map(fmt_m)
-        orden_cc_pan = cc_pan["etiq"].tolist()
-        barras_cc_pan = alt.Chart(df_cc_pan).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
-            x=alt.X("cc:N", title=None, sort=orden_cc_pan, axis=alt.Axis(labelAngle=-35)),
-            xOffset=alt.XOffset("serie:N", sort=["Emitida", "Recibida"]),
-            y=alt.Y("valor:Q", title=None, axis=eje_dinero()),
-            color=alt.Color("serie:N", title=None,
-                            scale=alt.Scale(domain=["Emitida", "Recibida"], range=[C_EMITIDA, C_RECIBIDA]),
-                            legend=alt.Legend(orient="top", direction="horizontal")),
-            tooltip=[alt.Tooltip("cc:N", title="CC"), alt.Tooltip("serie:N", title="Serie"),
-                     alt.Tooltip("etiqueta:N", title="Monto")],
+        bc1, bc2 = st.columns([1.6, 1])
+        with bc1:
+            uo_bar = uo_ad.reset_index()
+            uo_bar["color"] = uo_bar["utilidad"].map(lambda v: JOCS_AZUL if v >= 0 else C_NEG)
+            uo_bar["etiqueta"] = uo_bar["utilidad"].map(fmt_m)
+            mn_uo, mx_uo = float(uo_bar["utilidad"].min()), float(uo_bar["utilidad"].max())
+            alto_uo = max(340, 30 * len(uo_bar) + 60)
+            barras_uo = alt.Chart(uo_bar).mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3).encode(
+                y=alt.Y("aduana:N", sort=aduanas_uo, title=None),
+                x=alt.X("utilidad:Q", title=None, axis=eje_dinero(),
+                        scale=alt.Scale(domain=[min(0, mn_uo * 1.3), max(0, mx_uo * 1.25)])),
+                color=alt.Color("color:N", scale=None, legend=None),
+                tooltip=[alt.Tooltip("aduana:N", title="Aduana"),
+                         alt.Tooltip("etiqueta:N", title="Utilidad Operativa")],
+            )
+            etiq_uo_bar = alt.Chart(uo_bar).mark_text(align="left", dx=5, fontSize=11,
+                                                       color="#3d4752").encode(
+                y=alt.Y("aduana:N", sort=aduanas_uo), x="utilidad:Q", text="etiqueta:N",
+            )
+            st.altair_chart(tema((barras_uo + etiq_uo_bar).properties(height=alto_uo)),
+                            use_container_width=True)
+        with bc2:
+            aduana_uo_sel = st.selectbox(
+                "Seleccionar Aduana", aduanas_uo,
+                format_func=lambda a: f"{a}  ·  {fmt_m(uo_ad.loc[a, 'utilidad'])}")
+            fila = uo_ad.loc[aduana_uo_sel]
+            emit_sel = float(em_por_ad.get(aduana_uo_sel, 0.0))
+            rec_sel = float(rec_por_ad.get(aduana_uo_sel, 0.0))
+            ingresos_sel = float(fila["INGRESOS"])
+            pct_uo_sel = fila["utilidad"] / ingresos_sel if ingresos_sel else None
+            tabla_uo = pd.DataFrame({
+                "Concepto": ["Emitidas", "Honorarios AA", "Ingresos", "Recibidas", "Sueldos",
+                            "Egresos", "Utilidad Operativa", "% Utilidad Operativa"],
+                "Valor": [fmt_m(emit_sel), fmt_m(float(fila["HONORARIOS AA"])), fmt_m(ingresos_sel),
+                         fmt_m(rec_sel), fmt_m(float(fila["SUELDOS"])), fmt_m(float(fila["GASTOS"])),
+                         fmt_m(float(fila["utilidad"])),
+                         pct(pct_uo_sel) if pct_uo_sel is not None else "—"],
+            })
+            st.dataframe(tabla_uo, use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.subheader("Pareto de Utilidad Operativa (todo CC)")
+        st.caption("Ordenado por magnitud (positiva o negativa). Azul = utilidad positiva, "
+                   "rojo = negativa. Línea ámbar: % acumulado del total en valor absoluto.")
+        up = uo_ad[["utilidad"]].copy()
+        up["abs"] = up["utilidad"].abs()
+        up = up.sort_values("abs", ascending=False)
+        tot_abs = up["abs"].sum() or 1.0
+        up["acumulado"] = up["abs"].cumsum() / tot_abs
+        up["color"] = up["utilidad"].map(lambda v: JOCS_AZUL if v >= 0 else C_NEG)
+        up["etiqueta"] = up["utilidad"].map(fmt_m)
+        up["acum_txt"] = (up["acumulado"] * 100).map(lambda v: f"{v:.0f}%")
+        up = up.reset_index()
+        orden_up = up["aduana"].tolist()
+        barras_up = alt.Chart(up).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+            x=alt.X("aduana:N", title=None, sort=orden_up, axis=alt.Axis(labelAngle=-30)),
+            y=alt.Y("utilidad:Q", title=None, axis=eje_dinero()),
+            color=alt.Color("color:N", scale=None, legend=None),
+            tooltip=[alt.Tooltip("aduana:N", title="Aduana"),
+                     alt.Tooltip("etiqueta:N", title="Utilidad Operativa"),
+                     alt.Tooltip("acum_txt:N", title="Acumulado (magnitud)")],
         )
-        st.altair_chart(tema(barras_cc_pan.properties(height=420)), use_container_width=True)
-        st.caption("Top 12 centros de costo por volumen combinado (emitida + recibida).")
-    else:
-        st.info("Sin datos.")
+        etiq_up = alt.Chart(up).mark_text(dy=-10, fontSize=10, color="#3d4752").encode(
+            x=alt.X("aduana:N", sort=orden_up), y="utilidad:Q", text="etiqueta:N",
+        )
+        linea_up = alt.Chart(up).mark_line(
+            color=C_MARGEN, strokeWidth=2.5,
+            point=alt.OverlayMarkDef(filled=True, size=55, color=C_MARGEN)).encode(
+            x=alt.X("aduana:N", sort=orden_up),
+            y=alt.Y("acumulado:Q", title=None, axis=alt.Axis(format=".0%", orient="right"),
+                    scale=alt.Scale(domain=[0, 1.05])),
+        )
+        etiq_acum_up = alt.Chart(up).mark_text(dy=-10, fontSize=10, fontWeight=600,
+                                               color=C_MARGEN).encode(
+            x=alt.X("aduana:N", sort=orden_up),
+            y=alt.Y("acumulado:Q", scale=alt.Scale(domain=[0, 1.05])), text="acum_txt:N",
+        )
+        linea_umbral_up = alt.Chart(pd.DataFrame({"y": [0.8]})).mark_rule(
+            color=C_NEG, strokeDash=[4, 3], strokeWidth=1.5).encode(
+            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, 1.05])),
+        )
+        barras_layer_up = alt.layer(barras_up, etiq_up).properties(height=420)
+        linea_layer_up = alt.layer(linea_umbral_up, linea_up, etiq_acum_up).properties(height=420)
+        st.altair_chart(tema(alt.layer(barras_layer_up, linea_layer_up).resolve_scale(y="independent")),
+                        use_container_width=True)
 
     st.divider()
-    st.subheader("Detalle Dinámico de Conceptos")
-    st.caption("Facturación recibida por concepto de cierre · filtros propios de esta sección "
-               "(no dependen del filtro global de Aduana ni de 'Solo PROPIOS').")
-    fdc1, fdc2 = st.columns(2)
-    with fdc1:
-        tipo_dc = st.multiselect("Propios / Terceros", ["PROPIOS", "TERCEROS", "ACTIVO FIJO", "SIN TIPO"],
-                                 default=["PROPIOS"], key="dc_tipo")
-    with fdc2:
-        aduanas_dc_disp = sorted(dff_todos_tipos["aduana"].dropna().unique().tolist())
-        aduanas_dc = st.multiselect("Aduana", aduanas_dc_disp, default=[], key="dc_aduana",
-                                    placeholder="Todas")
-    rec_dc = dff_todos_tipos[dff_todos_tipos["tipo_factura"] == "RECIBIDA"].copy()
-    if tipo_dc:
-        rec_dc = rec_dc[rec_dc["tipo_cc"].isin(tipo_dc)]
-    if aduanas_dc:
-        rec_dc = rec_dc[rec_dc["aduana"].isin(aduanas_dc)]
-    rec_dc["concepto_cierre"] = rec_dc["concepto_cierre"].fillna("Sin categorizar")
-    conceptos_dc = rec_dc.groupby("concepto_cierre")["importe"].sum().nlargest(15).sort_values(ascending=False)
-    if len(conceptos_dc):
-        st.altair_chart(tema(barra_h(conceptos_dc, C_RECIBIDA, height=max(320, 30 * len(conceptos_dc)))),
-                        use_container_width=True)
-    else:
-        st.info("Sin datos para esta combinación de filtros.")
-
-    st.divider()
-    st.subheader("Top 10 Aduanas por Ingreso Facturado (Pareto 80/20)")
-    top_ad_pareto = EM.groupby("aduana")["importe"].sum().nlargest(10)
-    if len(top_ad_pareto):
-        st.altair_chart(tema(pareto_chart(top_ad_pareto, C_EMITIDA, height=420)),
-                        use_container_width=True)
-        st.caption("Barras: ingreso emitido por aduana (de mayor a menor). Línea ámbar: % acumulado "
-                   "del ingreso total · línea punteada roja: umbral Pareto 80%.")
-    else:
-        st.info("Sin datos.")
+    st.subheader("Costos de Originación")
+    col_izq, col_der = st.columns(2)
+    with col_izq:
+        st.markdown("**Honorarios de Josefa**")
+        tot_josefa = josefa_f["monto"].sum() if not josefa_f.empty else 0.0
+        st.metric("Total", fmt_m(tot_josefa))
+        if not josefa_f.empty:
+            por_ad_j = josefa_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
+            st.altair_chart(tema(barra_h(por_ad_j, JOCS_AZUL, height=max(260, 30 * len(por_ad_j)))),
+                            use_container_width=True)
+        else:
+            st.info("Sin datos.")
+    with col_der:
+        st.markdown("**Costos de Referencias**")
+        tot_cr = costos_ref_f["monto"].sum() if not costos_ref_f.empty else 0.0
+        st.metric("Total", fmt_m(tot_cr))
+        if not costos_ref_f.empty:
+            por_ad_cr = costos_ref_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
+            st.altair_chart(tema(barra_h(por_ad_cr, JOCS_VERDE, height=max(260, 30 * len(por_ad_cr)))),
+                            use_container_width=True)
+        else:
+            st.info("Sin datos.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GASTOS POR CONCEPTO
@@ -930,341 +948,6 @@ if pagina == "Gastos por Concepto":
         demostrativo = "esta" if articulo_concepto == "una" else "este"
         st.info(f"Sin {etq_contraparte.lower()} identificados para {demostrativo} {titulo_concepto.lower()}.")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# POR ADUANA / CC
-# ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Por Aduana (Rentabilidad)":
-    st.title("Facturación por Aduana (Rentabilidad)")
-    st.caption(f"{', '.join(sel_labels)}")
-
-    em_ad = EM.groupby("aduana")["importe"].sum()
-    rec_ad = REC.groupby("aduana")["importe"].sum()
-    aduanas = sorted(set(em_ad.index) | set(rec_ad.index),
-                     key=lambda a: -(em_ad.get(a, 0) + rec_ad.get(a, 0)))
-
-    st.subheader("Matriz de Rentabilidad por Aduana")
-    df_mat = pd.DataFrame({"aduana": aduanas,
-                           "em": [em_ad.get(a, 0) for a in aduanas],
-                           "rec": [rec_ad.get(a, 0) for a in aduanas]})
-    df_mat = df_mat[df_mat["em"] >= 1].copy()   # % margen solo tiene sentido si hay emitida real
-    df_mat["margen"] = df_mat["em"] - df_mat["rec"]
-    df_mat["pct_margen"] = df_mat["margen"] / df_mat["em"]
-    if len(df_mat):
-        ref_y = float(df_mat["margen"].median())
-        ref_x = MARGEN_PCT if MARGEN_PCT is not None else float(df_mat["pct_margen"].median())
-
-        def _cuadrante(row):
-            alto_y, alto_x = row["margen"] >= ref_y, row["pct_margen"] >= ref_x
-            if alto_y and alto_x:
-                return "Estrellas"
-            if alto_y and not alto_x:
-                return "Oportunidades"
-            if not alto_y and alto_x:
-                return "Caballos de Batalla"
-            return "Bajo Desempeño"
-
-        df_mat["cuadrante"] = df_mat.apply(_cuadrante, axis=1)
-        colores_cuad = {"Estrellas": JOCS_AZUL, "Oportunidades": "#c98a2e",
-                        "Caballos de Batalla": JOCS_VERDE, "Bajo Desempeño": C_NEG}
-
-        puntos = alt.Chart(df_mat).mark_circle(opacity=0.85, stroke="#FFFFFF", strokeWidth=1).encode(
-            x=alt.X("pct_margen:Q", title="% Margen", axis=alt.Axis(format=".0%")),
-            y=alt.Y("margen:Q", title="Margen ($)", axis=eje_dinero()),
-            size=alt.Size("em:Q", title="Emitida", legend=None, scale=alt.Scale(range=[150, 1600])),
-            color=alt.Color("cuadrante:N", title=None,
-                            scale=alt.Scale(domain=list(colores_cuad.keys()),
-                                            range=list(colores_cuad.values())),
-                            legend=alt.Legend(orient="bottom")),
-            tooltip=[alt.Tooltip("aduana:N", title="Aduana"),
-                     alt.Tooltip("em:Q", title="Emitida", format=",.0f"),
-                     alt.Tooltip("rec:Q", title="Recibida", format=",.0f"),
-                     alt.Tooltip("margen:Q", title="Margen", format=",.0f"),
-                     alt.Tooltip("pct_margen:Q", title="% Margen", format=".1%"),
-                     alt.Tooltip("cuadrante:N", title="Cuadrante")],
-        )
-        etiq_mat = alt.Chart(df_mat).mark_text(dy=-14, fontSize=10, color="#3d4752").encode(
-            x="pct_margen:Q", y="margen:Q", text="aduana:N",
-        )
-        regla_x = alt.Chart(pd.DataFrame({"x": [ref_x]})).mark_rule(
-            color="#9aa5b1", strokeDash=[4, 3]).encode(x="x:Q")
-        regla_y = alt.Chart(pd.DataFrame({"y": [ref_y]})).mark_rule(
-            color="#9aa5b1", strokeDash=[4, 3]).encode(y="y:Q")
-        chart_mat = (regla_x + regla_y + puntos + etiq_mat).properties(height=460)
-        st.altair_chart(tema(chart_mat), use_container_width=True)
-        st.caption(f"Cuadrantes definidos por el margen mediano ({fmt_m(ref_y)}) y el % margen global "
-                   f"del negocio ({pct(ref_x)}). El tamaño de cada burbuja es proporcional a lo emitido.")
-    else:
-        st.info("Sin datos suficientes para la matriz de rentabilidad.")
-
-    st.divider()
-    st.subheader("Emitida vs Recibida por aduana")
-    escala = st.radio("Escala", ["Logarítmica", "Normal"], horizontal=True, key="escala_ad")
-    es_log = escala == "Logarítmica"
-    if es_log:
-        st.caption("En escala logarítmica cada línea vale 10 veces la anterior: así se ven también "
-                   "las aduanas chicas. El monto exacto va sobre cada barra.")
-    # Montos menores a $1 (centavos de facturas de prueba) no se grafican: estiran el eje log.
-    y_em = [float(v) if v >= 1 else 0.0 for v in (em_ad.get(a, 0) for a in aduanas)]
-    y_rec = [float(v) if v >= 1 else 0.0 for v in (rec_ad.get(a, 0) for a in aduanas)]
-
-    df_ad = pd.DataFrame({
-        "aduana": aduanas * 2,
-        "serie": ["Emitida"] * len(aduanas) + ["Recibida"] * len(aduanas),
-        "valor": y_em + y_rec,
-    })
-    df_ad = df_ad[df_ad["valor"] > 0].copy()
-    df_ad["etiqueta"] = df_ad["valor"].map(fmt_m)
-    positivos = df_ad["valor"].tolist()
-    y2_kw = {}
-    if positivos and es_log:
-        dom_min = 10 ** (math.log10(min(positivos)) - 0.8)
-        escala_y = alt.Scale(type="log", base=10, nice=False,
-                             domain=[dom_min, 10 ** (math.log10(max(positivos)) + 0.6)])
-        # Vega-Lite no infiere una base para barras en escala log (log(0) no existe);
-        # sin esto las barras quedan invisibles, con solo la etiqueta flotando.
-        y2_kw = {"y2": alt.Y2(datum=dom_min)}
-    elif positivos:
-        escala_y = alt.Scale(domain=[0, max(positivos) * 1.25])
-    else:
-        escala_y = alt.Undefined
-
-    barras = alt.Chart(df_ad).mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
-        x=alt.X("aduana:N", title=None, sort=aduanas, axis=alt.Axis(labelAngle=-35)),
-        xOffset=alt.XOffset("serie:N", sort=["Emitida", "Recibida"]),
-        y=alt.Y("valor:Q", title=None, axis=eje_dinero(), scale=escala_y),
-        color=alt.Color("serie:N", title=None,
-                        scale=alt.Scale(domain=["Emitida", "Recibida"], range=[C_EMITIDA, C_RECIBIDA]),
-                        legend=alt.Legend(orient="top", direction="horizontal")),
-        tooltip=[alt.Tooltip("aduana:N", title="Aduana"), alt.Tooltip("serie:N", title="Serie"),
-                 alt.Tooltip("etiqueta:N", title="Monto")],
-        **y2_kw,
-    )
-    etiq_ad = alt.Chart(df_ad).mark_text(angle=270, align="left", baseline="middle", dx=4,
-                                         fontSize=10, color="#3d4752").encode(
-        x=alt.X("aduana:N", sort=aduanas),
-        xOffset=alt.XOffset("serie:N", sort=["Emitida", "Recibida"]),
-        y="valor:Q", text="etiqueta:N",
-    )
-    chart_ad = (barras + etiq_ad).properties(height=580)
-    st.altair_chart(tema(chart_ad), use_container_width=True)
-
-    st.divider()
-    st.subheader("Margen por aduana")
-    st.caption("Izquierda: margen en pesos (emitida − recibida). Derecha: margen como % de lo emitido, "
-               "para comparar aduanas de cualquier tamaño (sin barra de % si la aduana no tiene emitida). "
-               "Azul = positivo, rojo = negativo.")
-    mg = pd.DataFrame({"aduana": aduanas, "em": y_em, "rec": y_rec})
-    mg = mg[(mg["em"] > 0) | (mg["rec"] > 0)].copy()
-    mg["margen"] = mg["em"] - mg["rec"]
-    mg["pct"] = mg.apply(lambda r: r["margen"] / r["em"] if r["em"] else None, axis=1)
-    mg = mg.sort_values("margen", ascending=False)   # mayor margen arriba (orden Altair: primero = arriba)
-    mg["color"] = mg["margen"].map(lambda m: JOCS_AZUL if m >= 0 else C_NEG)
-    mg["etiqueta"] = mg["margen"].map(fmt_m)
-    mg["pct_recortado"] = mg["pct"].map(lambda p: None if p is None else max(p, -1.0))
-    mg["pct_etiqueta"] = mg["pct"].map(lambda p: "s/ emitida" if p is None else f"{p*100:.0f}%")
-    mg["pct_color"] = mg["pct"].map(lambda p: JOCS_AZUL if (p is not None and p >= 0) else C_NEG)
-    orden_mg = mg["aduana"].tolist()
-    pcts = [p for p in mg["pct"] if p is not None]
-    mn, mx = float(mg["margen"].min()), float(mg["margen"].max())
-    alto_mg = max(400, 34 * len(mg) + 40)
-
-    panel_pesos = alt.Chart(mg).mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3).encode(
-        y=alt.Y("aduana:N", sort=orden_mg, title=None),
-        x=alt.X("margen:Q", title=None, axis=eje_dinero(),
-                scale=alt.Scale(domain=[min(0, mn * 1.9), mx * 1.3])),
-        color=alt.Color("color:N", scale=None, legend=None),
-        tooltip=[alt.Tooltip("aduana:N", title="Aduana"), alt.Tooltip("etiqueta:N", title="Margen"),
-                 alt.Tooltip("em:Q", title="Emitida", format=",.0f"),
-                 alt.Tooltip("rec:Q", title="Recibida", format=",.0f")],
-    )
-    etiq_pesos = alt.Chart(mg).mark_text(align="left", dx=5, fontSize=11, color="#3d4752").encode(
-        y=alt.Y("aduana:N", sort=orden_mg), x="margen:Q", text="etiqueta:N",
-    )
-    panel_izq = (panel_pesos + etiq_pesos).properties(height=alto_mg, title="Margen ($)")
-
-    panel_pct = alt.Chart(mg).mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3).encode(
-        y=alt.Y("aduana:N", sort=orden_mg, title=None, axis=None),
-        x=alt.X("pct_recortado:Q", title=None, axis=alt.Axis(format=".0%"),
-                scale=alt.Scale(domain=[min(-0.1, max(-1.0, min(pcts, default=0)) * 1.3), 1.25])),
-        color=alt.Color("pct_color:N", scale=None, legend=None),
-        tooltip=[alt.Tooltip("aduana:N", title="Aduana"), alt.Tooltip("pct_etiqueta:N", title="Margen %")],
-    )
-    etiq_pct = alt.Chart(mg).mark_text(align="left", dx=5, fontSize=11, color="#3d4752").encode(
-        y=alt.Y("aduana:N", sort=orden_mg), x="pct_recortado:Q", text="pct_etiqueta:N",
-    )
-    panel_der = (panel_pct + etiq_pct).properties(height=alto_mg, title="Margen (% de lo emitido)")
-
-    chart_mg = alt.hconcat(panel_izq, panel_der).resolve_scale(color="independent")
-    st.altair_chart(tema(chart_mg), use_container_width=True)
-
-    st.divider()
-    st.subheader("Centros de costo (CC)")
-    v1, v2 = st.columns(2)
-    with v1:
-        tipo_vista = st.radio("Ver", ["Emitida", "Recibida", "Margen"], horizontal=True, key="cc_tipo")
-    es_margen = tipo_vista == "Margen"
-    with v2:
-        if es_margen:
-            st.caption("El margen puede ser negativo, por eso se muestra siempre en escala normal.")
-            escala_cc = "Normal"
-        else:
-            escala_cc = st.radio("Escala ", ["Logarítmica", "Normal"], horizontal=True, key="escala_cc")
-
-    claves = ["cc", "aduana", "tipo_cc"]
-    em_cc = EM.groupby(claves, dropna=False)["importe"].sum().rename("em").reset_index()
-    rec_cc = REC.groupby(claves, dropna=False)["importe"].sum().rename("rec").reset_index()
-    cc_g = em_cc.merge(rec_cc, on=claves, how="outer").fillna({"em": 0.0, "rec": 0.0})
-    if es_margen:
-        cc_g["valor"] = cc_g["em"] - cc_g["rec"]
-        cc_g = cc_g[cc_g["valor"].abs() >= 1]
-    else:
-        cc_g["valor"] = cc_g["em"] if tipo_vista == "Emitida" else cc_g["rec"]
-        cc_g = cc_g[cc_g["valor"] >= 1]
-    cc_g = cc_g.sort_values("valor", ascending=False)   # mayor arriba (orden Altair: primero = arriba)
-    if cc_g.empty:
-        st.info("Sin datos para mostrar.")
-    else:
-        cc_g = cc_g.copy()
-        cc_g["etiq"] = [("Sin CC" if pd.isna(c) else str(int(c))) + f" · {a}"
-                        + ("" if SOLO_PROPIOS else f" ({t})")
-                        for c, a, t in zip(cc_g["cc"], cc_g["aduana"], cc_g["tipo_cc"])]
-        orden_cc = cc_g["etiq"].tolist()
-        if es_margen:
-            cc_g["color"] = cc_g["valor"].map(lambda v: JOCS_AZUL if v >= 0 else C_NEG)
-            # el % solo se muestra si la emitida es real (>= $1) y el % no es absurdo (emitida de centavos)
-            cc_g["texto"] = [fmt_m(v) + (f"  ·  {v / e * 100:.0f}%" if e >= 1 and abs(v / e) <= 10 else "")
-                             for v, e in zip(cc_g["valor"], cc_g["em"])]
-        else:
-            tot_cc = cc_g["valor"].sum()
-            cc_g["color"] = C_EMITIDA if tipo_vista == "Emitida" else C_RECIBIDA
-            cc_g["texto"] = [f"{fmt_m(v)}  ·  {v / tot_cc * 100:.1f}%" for v in cc_g["valor"]]
-
-        lo, hi = float(cc_g["valor"].min()), float(cc_g["valor"].max())
-        h_cc = max(400, 30 * len(cc_g) + 90)
-        x2_kw = {}
-        if escala_cc == "Logarítmica":
-            dom_min_cc = 10 ** (math.log10(lo) - 0.8)
-            escala_x = alt.Scale(type="log", base=10, nice=False,
-                                 domain=[dom_min_cc, 10 ** (math.log10(hi) + 0.9)])
-            # Igual que en la gráfica de arriba: sin x2 explícito, las barras en log no se ven.
-            x2_kw = {"x2": alt.X2(datum=dom_min_cc)}
-        elif es_margen:
-            escala_x = alt.Scale(domain=[min(0.0, lo * 1.9), hi * 1.35])
-        else:
-            escala_x = alt.Scale(domain=[0, hi * 1.3])
-
-        barras_cc = alt.Chart(cc_g).mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3).encode(
-            y=alt.Y("etiq:N", title=None, sort=orden_cc),
-            x=alt.X("valor:Q", title=None, axis=eje_dinero(), scale=escala_x),
-            color=alt.Color("color:N", scale=None, legend=None),
-            tooltip=[alt.Tooltip("etiq:N", title="Centro de costo"),
-                     alt.Tooltip("em:Q", title="Emitida", format=",.0f"),
-                     alt.Tooltip("rec:Q", title="Recibida", format=",.0f")],
-            **x2_kw,
-        )
-        etiq_cc = alt.Chart(cc_g).mark_text(align="left", dx=5, fontSize=11, color="#3d4752").encode(
-            y=alt.Y("etiq:N", sort=orden_cc), x="valor:Q", text="texto:N",
-        )
-        chart_cc = (barras_cc + etiq_cc).properties(height=h_cc)
-        st.altair_chart(tema(chart_cc), use_container_width=True)
-        st.caption("Margen: emitida − recibida de cada centro de costo; a la derecha del monto, "
-                   "el margen como % de lo emitido." if es_margen else
-                   "Sobre cada barra: monto y % del total de la vista (emitida o recibida).")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODELO Y ORIGINACIÓN
-# ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Modelo y Originación":
-    st.title("Modelo y Originación")
-    st.caption(f"{', '.join(sel_labels)} · Asesoría aduanal, corresponsalías y costos de originación")
-    st.caption("Ingreso Asesoría = costos de referencia (hoja 'costos de referencia'); "
-               "Gasto Corresponsalía = facturas de corresponsalías (hoja 'corresponsalias'). "
-               "El documento de requerimientos no deja claro qué hoja alimenta 'Ingreso Asesoría' — "
-               "se probó primero con 'honorarios josefa' y dio un margen neto muy negativo e "
-               "implausible (\\$53k de ingreso contra \\$387k de gasto), así que se usó 'costos de "
-               "referencia' en su lugar (monto del mismo orden que el gasto). Avisa si no es la "
-               "lectura correcta.")
-
-    st.subheader("Corresponsalías vs. Asesoría Aduanal")
-    ing_asesoria = costos_ref_f["monto"].sum() if not costos_ref_f.empty else 0.0
-    gasto_corres = corres_f["monto"].sum() if not corres_f.empty else 0.0
-    margen_neto_mo = ing_asesoria - gasto_corres
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Ingreso Asesoría", fmt_m(ing_asesoria))
-    c2.metric("Gasto Corresponsalía", fmt_m(gasto_corres))
-    c3.metric("Margen Neto", fmt_m(margen_neto_mo),
-              delta=pct(margen_neto_mo / ing_asesoria) if ing_asesoria else None)
-
-    if costos_ref_f.empty and corres_f.empty:
-        st.info("Sin datos de corresponsalías/asesoría para el periodo y aduana seleccionados.")
-    else:
-        ing_ad = (costos_ref_f.groupby("aduana")["monto"].sum()
-                 if not costos_ref_f.empty else pd.Series(dtype=float))
-        gas_ad = corres_f.groupby("aduana")["monto"].sum() if not corres_f.empty else pd.Series(dtype=float)
-        aduanas_mo = sorted(set(ing_ad.index) | set(gas_ad.index),
-                            key=lambda a: -(ing_ad.get(a, 0) + gas_ad.get(a, 0)))
-        df_mo = pd.DataFrame({
-            "aduana": aduanas_mo,
-            "ingreso": [ing_ad.get(a, 0.0) for a in aduanas_mo],
-            "gasto": [gas_ad.get(a, 0.0) for a in aduanas_mo],
-        })
-        df_mo["margen"] = df_mo["ingreso"] - df_mo["gasto"]
-        df_mo["etiqueta"] = df_mo["margen"].map(fmt_m)
-        df_barras_mo = pd.concat([
-            pd.DataFrame({"aduana": df_mo["aduana"], "serie": "Ingreso Asesoría", "valor": df_mo["ingreso"]}),
-            pd.DataFrame({"aduana": df_mo["aduana"], "serie": "Gasto Corresponsalía", "valor": df_mo["gasto"]}),
-        ], ignore_index=True)
-        df_barras_mo["etq"] = df_barras_mo["valor"].map(fmt_m)
-        orden_mo = df_mo["aduana"].tolist()
-
-        barras_mo = alt.Chart(df_barras_mo).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
-            x=alt.X("aduana:N", title=None, sort=orden_mo, axis=alt.Axis(labelAngle=-30)),
-            xOffset=alt.XOffset("serie:N", sort=["Ingreso Asesoría", "Gasto Corresponsalía"]),
-            y=alt.Y("valor:Q", title=None, axis=eje_dinero()),
-            color=alt.Color("serie:N", title=None,
-                            scale=alt.Scale(domain=["Ingreso Asesoría", "Gasto Corresponsalía"],
-                                            range=[JOCS_VERDE, C_NEG]),
-                            legend=alt.Legend(orient="top", direction="horizontal")),
-            tooltip=[alt.Tooltip("aduana:N", title="Aduana"), alt.Tooltip("serie:N", title="Serie"),
-                     alt.Tooltip("etq:N", title="Monto")],
-        )
-        linea_mo = alt.Chart(df_mo).mark_line(
-            color=C_MARGEN, strokeWidth=3,
-            point=alt.OverlayMarkDef(filled=True, size=70, color=C_MARGEN)).encode(
-            x=alt.X("aduana:N", sort=orden_mo), y=alt.Y("margen:Q"),
-            tooltip=[alt.Tooltip("aduana:N", title="Aduana"),
-                     alt.Tooltip("etiqueta:N", title="Margen Neto")],
-        )
-        etiq_mo = alt.Chart(df_mo).mark_text(dy=-10, fontSize=10, fontWeight=600, color=C_MARGEN).encode(
-            x=alt.X("aduana:N", sort=orden_mo), y="margen:Q", text="etiqueta:N",
-        )
-        chart_mo = (barras_mo + linea_mo + etiq_mo).properties(height=420)
-        st.altair_chart(tema(chart_mo), use_container_width=True)
-
-    st.divider()
-    st.subheader("Costos de Originación")
-    col_izq, col_der = st.columns(2)
-    with col_izq:
-        st.markdown("**Honorarios de Josefa**")
-        tot_josefa = josefa_f["monto"].sum() if not josefa_f.empty else 0.0
-        st.metric("Total", fmt_m(tot_josefa))
-        if not josefa_f.empty:
-            por_ad_j = josefa_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
-            st.altair_chart(tema(barra_h(por_ad_j, JOCS_AZUL, height=max(260, 30 * len(por_ad_j)))),
-                            use_container_width=True)
-        else:
-            st.info("Sin datos.")
-    with col_der:
-        st.markdown("**Costos de Referencias**")
-        tot_cr = costos_ref_f["monto"].sum() if not costos_ref_f.empty else 0.0
-        st.metric("Total", fmt_m(tot_cr))
-        if not costos_ref_f.empty:
-            por_ad_cr = costos_ref_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
-            st.altair_chart(tema(barra_h(por_ad_cr, JOCS_VERDE, height=max(260, 30 * len(por_ad_cr)))),
-                            use_container_width=True)
-        else:
-            st.info("Sin datos.")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NÓMINA
@@ -1297,18 +980,28 @@ if pagina == "Nómina":
 
     st.divider()
     st.subheader("Desglose por Aduana y Lista de Personal")
+    st.caption("Cada cuadro es una aduana; el tamaño es proporcional a su nómina total.")
     por_aduana_nom = sueldos_f.groupby("aduana")["total"].sum().sort_values(ascending=False)
+    tm_aduana = treemap_chart(por_aduana_nom, height=280)
+    if tm_aduana is not None:
+        st.altair_chart(tema(tm_aduana), use_container_width=True)
+
     aduana_nom_sel = st.selectbox("Seleccionar Aduana", por_aduana_nom.index.tolist(),
                                   format_func=lambda a: f"{a}  ·  {fmt_m(por_aduana_nom[a])}")
     tabla_nom = sueldos_f[sueldos_f["aduana"] == aduana_nom_sel].copy()
     tot_aduana_nom = tabla_nom["total"].sum()
     tabla_nom["pct"] = tabla_nom["total"] / tot_aduana_nom if tot_aduana_nom else 0.0
     tabla_nom = tabla_nom.sort_values("total", ascending=False)
-    st.caption(f"Total nómina {aduana_nom_sel}: {fmt_m(tot_aduana_nom)} · {len(tabla_nom)} empleado(s)")
+    st.caption(f"Total nómina {aduana_nom_sel}: {fmt_m(tot_aduana_nom)} · {len(tabla_nom)} empleado(s) "
+               "· cada cuadro es un empleado de esta aduana.")
+    por_empleado_nom = tabla_nom.groupby("nombre")["total"].sum().sort_values(ascending=False)
+    tm_empleado = treemap_chart(por_empleado_nom, height=380)
+    if tm_empleado is not None:
+        st.altair_chart(tema(tm_empleado), use_container_width=True)
     st.dataframe(pd.DataFrame({
         "Empleado": tabla_nom["nombre"],
-        "Sueldo Total": tabla_nom["total"].map(fmt),
         "% Conformación Aduana": tabla_nom["pct"].map(lambda v: f"{v*100:.1f}%"),
+        "Sueldo Total": tabla_nom["total"].map(fmt),
     }), use_container_width=True, hide_index=True)
 
     st.divider()
@@ -1324,15 +1017,14 @@ if pagina == "Nómina":
     c1.metric("Aduana", fila_emp["aduana"].iloc[0] if len(fila_emp) else "—")
     c2.metric("Costo Total Neto", fmt_m(fila_emp_sum["total"]))
 
-    df_cascada = pd.DataFrame({
-        "concepto": [et for _, et in COLS_NOMINA],
-        "valor": [fila_emp_sum[c] for c, _ in COLS_NOMINA],
-    })
-    st.altair_chart(
-        tema(waterfall_chart(df_cascada, "concepto", "valor",
-                             color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=JOCS_VERDE,
-                             total_label="COSTO TOTAL NETO", height=420)),
-        use_container_width=True)
+    st.caption("Cada cuadro es un componente de su percepción; el tamaño es proporcional al "
+               "monto (azul = positivo, rojo = negativo, ej. ajustes de Provisiones).")
+    serie_comp_real = pd.Series({et: fila_emp_sum[c] for c, et in COLS_NOMINA})
+    tm_comp = treemap_chart(serie_comp_real.abs(), height=360, valores_reales=serie_comp_real)
+    if tm_comp is not None:
+        st.altair_chart(tema(tm_comp), use_container_width=True)
+    else:
+        st.info("Sin componentes que mostrar.")
     # st.caption() renderiza markdown: dos o mas "$" sueltos en el mismo texto los
     # interpreta como un bloque de LaTeX y se come los signos de pesos. Se escapan
     # a "\$" para que se vean literales (aqui se juntan 10 montos en una sola linea).
@@ -1341,64 +1033,15 @@ if pagina == "Nómina":
     st.caption(f"{partes_txt} = {total_txt} (Costo Total Neto)")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# DETALLE DE FACTURAS
+# TARJETA DE CRÉDITO
 # ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Detalle de Facturas":
-    st.title("Detalle de Facturas")
-    st.caption(f"{', '.join(sel_labels)} · Emitidas y recibidas juntas, línea por línea")
+if pagina == "Tarjeta de Crédito":
+    st.title("Tarjeta de Crédito")
+    st.info(
+        "**Pestaña pendiente de datos.** Esta vista necesita los movimientos de las tarjetas "
+        "AMEX de Alejandro y Josefa (fecha, monto, UUID de factura relacionado si existe) para "
+        "calcular: total gastado, movimientos, UUID's encontrados/no encontrados, monto "
+        "facturado/no facturado y el % del gasto ya documentado por aduana. Esas hojas todavía "
+        "no están en el Google Sheets conectado — hay que agregarlas ahí primero."
+    )
 
-    f1, f2, f3 = st.columns([1.2, 1.2, 2])
-    with f1:
-        tipos_sel = st.multiselect("Tipo", ["EMITIDA", "RECIBIDA"],
-                                   default=["EMITIDA", "RECIBIDA"])
-    with f2:
-        aduanas_disp = sorted(dff["aduana"].dropna().unique().tolist())
-        aduanas_sel = st.multiselect("Aduana", aduanas_disp, default=[])
-    with f3:
-        buscar = st.text_input("Buscar (cliente, proveedor, descripción o referencia)", "")
-
-    f4, f5, f6 = st.columns([1, 1.4, 1.6])
-    with f4:
-        incluir_cancel = st.checkbox("Incluir canceladas", value=False)
-    with f5:
-        incluir_sin_monto = st.checkbox("Incluir líneas sin monto (muestra su importe del Excel)",
-                                        value=False)
-    with f6:
-        min_importe = st.number_input("Importe mínimo", min_value=0, value=0, step=1000)
-
-    base = dff if incluir_cancel else dff[~dff["cancelada"]]
-    if not incluir_sin_monto:
-        base = base[~base["sin_monto"]]
-    base = base.assign(importe=base["importe"].where(~base["sin_monto"], base["importe_sin_monto"]))
-    fd = base[base["tipo_factura"].isin(tipos_sel)] if tipos_sel else base.iloc[0:0]
-    if aduanas_sel:
-        fd = fd[fd["aduana"].isin(aduanas_sel)]
-    if buscar.strip():
-        s = buscar.strip().lower()
-        mask = (fd["contraparte"].fillna("").str.lower().str.contains(s, regex=False) |
-                fd["descripcion"].fillna("").str.lower().str.contains(s, regex=False) |
-                fd["referencia"].fillna("").str.lower().str.contains(s, regex=False))
-        fd = fd[mask]
-    if min_importe > 0:
-        fd = fd[fd["importe"] >= min_importe]
-
-    fd = fd.sort_values("importe", ascending=False)
-    st.caption(f"{len(fd):,} líneas · {fmt(fd['importe'].sum())} en total")
-
-    MAX_FILAS = 500
-    if len(fd) > MAX_FILAS:
-        st.info(f"Mostrando las primeras {MAX_FILAS:,} líneas de {len(fd):,} (ordenadas por importe).")
-    mostrar = fd.head(MAX_FILAS)
-
-    tabla = pd.DataFrame({
-        "Tipo": mostrar["tipo_factura"],
-        "Cliente / Proveedor": mostrar["contraparte"].fillna(""),
-        "Descripción": mostrar["descripcion"].fillna(""),
-        "Importe": mostrar["importe"].map(fmt),
-        "Aduana": mostrar["aduana"],
-        "CC": mostrar["cc"].map(lambda c: "" if pd.isna(c) else str(int(c))),
-        "Propios / Terceros": mostrar["tipo_cc"],
-        "Concepto": mostrar["concepto_cierre"].fillna(""),
-        "Referencia": mostrar["referencia"].fillna(""),
-    })
-    st.dataframe(tabla, use_container_width=True, hide_index=True, height=560)
