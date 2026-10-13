@@ -227,51 +227,6 @@ root.render(
 """
     recharts_component(render_js, data, height=h_px)
 
-def bar_h_signed_recharts(serie, color_pos, color_neg, height=None, formateador=fmt_m):
-    """Barra horizontal con color segun signo (azul positivo, rojo negativo) --
-    version Recharts de los paneles 'Margen'/'Utilidad Operativa por Aduana'."""
-    df = serie.rename("valor").reset_index()
-    df.columns = ["label", "valor"]
-    df = df.sort_values("valor", ascending=False)
-    df["etiqueta"] = df["valor"].map(formateador)
-    h_px = height or max(280, 30 * len(df) + 60)
-    data = [{"label": str(r.label), "valor": float(r.valor), "etiqueta": r.etiqueta,
-             "color": color_pos if r.valor >= 0 else color_neg}
-            for r in df.itertuples()]
-    ancho_eje = _ancho_eje_categoria(df["label"])
-    render_js = f"""
-const h = React.createElement;
-const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList, Cell,
-         ReferenceLine }} = Recharts;
-
-function LabelFuera(props) {{
-  const {{ x, y, width, height, value }} = props;
-  const positivo = width >= 0;
-  return h('text', {{ x: x + width + (positivo ? 5 : -5), y: y + height / 2, dy: 4,
-                     textAnchor: positivo ? 'start' : 'end', fontSize: 11, fill: '#3d4752' }}, value);
-}}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  h(ResponsiveContainer, {{ width: '100%', height: {h_px - 10} }},
-    h(BarChart, {{ data: data, layout: 'vertical', margin: {{ top: 10, right: 70, left: 10, bottom: 10 }} }},
-      h(CartesianGrid, {{ strokeDasharray: '3 3', horizontal: false }}),
-      h(XAxis, {{ type: 'number', tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
-                 axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(YAxis, {{ dataKey: 'label', type: 'category', width: {ancho_eje},
-                 tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta, p.payload.label] }}),
-      h(ReferenceLine, {{ x: 0, stroke: '#9aa5b1' }}),
-      h(Bar, {{ dataKey: 'valor', isAnimationActive: false, radius: [0, 3, 3, 0] }},
-        data.map((d, i) => h(Cell, {{ key: i, fill: d.color }})),
-        h(LabelList, {{ dataKey: 'etiqueta', content: LabelFuera }})
-      )
-    )
-  )
-);
-"""
-    recharts_component(render_js, data, height=h_px)
-
 def donut_recharts(valores, height=360, colores=None, etiquetas=None,
                    centro_titulo=None, centro_sub=None):
     """Version Recharts de donut_chart(): PieChart con innerRadius + leyenda a la
@@ -369,6 +324,45 @@ root.render(
       ),
       h(Line, {{ yAxisId: 'der', type: 'monotone', dataKey: 'acumulado', stroke: '{C_MARGEN}',
                 strokeWidth: 2.5, dot: {{ r: 4, fill: '{C_MARGEN}' }}, isAnimationActive: false }})
+    )
+  )
+);
+"""
+    recharts_component(render_js, data, height=height)
+
+def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fmt_m):
+    """RadarChart (componente nativo de Recharts): un eje por cada valor de
+    'categoria_col', un polígono por cada serie en 'series_colores'
+    ({nombre_columna: color}). Pensado para comparar 2+ series no-negativas por
+    categoría (ej. Emitidas vs Recibidas por aduana) -- un radar no representa
+    bien valores negativos, para eso usar una barra con signo."""
+    data = []
+    for _, row in df.iterrows():
+        d = {"categoria": str(row[categoria_col])}
+        for serie in series_colores:
+            d[serie] = float(row[serie])
+            d[f"{serie}_etq"] = formateador(row[serie])
+        data.append(d)
+    radars_js = "\n".join(
+        f"""h(Radar, {{ name: {json.dumps(serie)}, dataKey: {json.dumps(serie)},
+                     stroke: '{color}', fill: '{color}', fillOpacity: 0.25,
+                     isAnimationActive: false }}),"""
+        for serie, color in series_colores.items()
+    )
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
+         Tooltip, Legend }} = Recharts;
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
+    h(RadarChart, {{ data: data, margin: {{ top: 10, right: 30, bottom: 10, left: 30 }} }},
+      h(PolarGrid, {{}}),
+      h(PolarAngleAxis, {{ dataKey: 'categoria', tick: {{ fontSize: 10, fill: '#54616f' }} }}),
+      h(PolarRadiusAxis, {{ tick: {{ fontSize: 9, fill: '#9aa5b1' }}, tickFormatter: fmtMoney }}),
+      h(Tooltip, {{ formatter: fmtMoney }}),
+      h(Legend, {{}}),
+      {radars_js}
     )
   )
 );
@@ -837,8 +831,13 @@ if pagina == "Utilidad Operativa":
 
         bc1, bc2 = st.columns([1.6, 1])
         with bc1:
-            alto_uo = max(340, 30 * len(uo_ad) + 60)
-            bar_h_signed_recharts(uo_ad["utilidad"], JOCS_AZUL, C_NEG, height=alto_uo)
+            df_radar_uo = pd.DataFrame({
+                "aduana": aduanas_uo,
+                "Emitidas": [float(em_por_ad.get(a, 0.0)) for a in aduanas_uo],
+                "Recibidas": [float(rec_por_ad.get(a, 0.0)) for a in aduanas_uo],
+            })
+            radar_recharts(df_radar_uo, "aduana", {"Emitidas": C_EMITIDA, "Recibidas": C_RECIBIDA},
+                          height=480)
         with bc2:
             aduana_uo_sel = st.selectbox(
                 "Seleccionar Aduana", aduanas_uo,
