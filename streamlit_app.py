@@ -956,22 +956,21 @@ if pagina == "Utilidad Operativa":
 
         bc1, bc2 = st.columns([1.6, 1])
         with bc1:
-            # Top 10 por volumen combinado: con las 17 aduanas el radar queda
-            # aplastado (las chicas pegadas al centro, ilegibles) -- y escala
-            # log para que un $100k no desaparezca junto a un $1.7M. Se ordena por
-            # ingreso+egreso YA ajustado (no por emitida+recibida cruda), para que
-            # IMILE LAREDO entre al top 10 con su actividad real (ver nota arriba:
-            # no factura por el SAT, así que su emitida/recibida real es $0).
+            # Las 17 aduanas, ordenadas por volumen combinado (ingreso+egreso ya
+            # ajustado, no emitida+recibida cruda, para que IMILE LAREDO entre
+            # ordenada con su actividad real -- no factura por el SAT, así que su
+            # emitida/recibida real es $0). Escala log para que un $100k no
+            # desaparezca junto a un $1.7M.
             aduanas_radar = sorted(
                 aduanas_uo,
                 key=lambda a: -(uo_ad.loc[a, "ingreso"] + uo_ad.loc[a, "egreso"]),
-            )[:10]
+            )
             df_radar_uo = pd.DataFrame({
                 "aduana": aduanas_radar,
                 "Ingreso": [float(uo_ad.loc[a, "ingreso"]) for a in aduanas_radar],
                 "Utilidad Operativa": [float(uo_ad.loc[a, "utilidad"]) for a in aduanas_radar],
             })
-            st.caption("Top 10 aduanas por volumen combinado (emitida + recibida). Escala logarítmica. "
+            st.caption("Las 17 aduanas, por volumen combinado. Escala logarítmica. "
                        "Utilidad Operativa negativa se marca en rojo (punto y tooltip).")
             radar_recharts(df_radar_uo, "aduana",
                           {"Ingreso": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
