@@ -330,18 +330,29 @@ root.render(
 """
     recharts_component(render_js, data, height=height)
 
-def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fmt_m):
+def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fmt_m,
+                   escala_log=False):
     """RadarChart (componente nativo de Recharts): un eje por cada valor de
     'categoria_col', un polígono por cada serie en 'series_colores'
     ({nombre_columna: color}). Pensado para comparar 2+ series no-negativas por
     categoría (ej. Emitidas vs Recibidas por aduana) -- un radar no representa
-    bien valores negativos, para eso usar una barra con signo."""
+    bien valores negativos, para eso usar una barra con signo.
+    'escala_log' (recomendado si hay categorías de ordenes de magnitud muy
+    distintos -- si no, las chicas se ven aplastadas al centro, todas pegadas):
+    el tooltip/etiqueta siempre muestra el monto real; los valores en 0 (o muy
+    chicos) se "pisan" a un piso positivo solo para que el log tenga donde
+    dibujarlos (log(0) no existe)."""
+    valores_todos = [float(row[s]) for _, row in df.iterrows() for s in series_colores]
+    positivos = [v for v in valores_todos if v > 0]
+    piso = (min(positivos) / 3) if escala_log and positivos else 0.0
+    techo = max(valores_todos) if valores_todos else 1.0
     data = []
     for _, row in df.iterrows():
         d = {"categoria": str(row[categoria_col])}
         for serie in series_colores:
-            d[serie] = float(row[serie])
-            d[f"{serie}_etq"] = formateador(row[serie])
+            v = float(row[serie])
+            d[serie] = max(v, piso) if escala_log else v
+            d[f"{serie}_etq"] = formateador(v)
         data.append(d)
     radars_js = "\n".join(
         f"""h(Radar, {{ name: {json.dumps(serie)}, dataKey: {json.dumps(serie)},
@@ -349,6 +360,8 @@ def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fm
                      isAnimationActive: false }}),"""
         for serie, color in series_colores.items()
     )
+    eje_radio_kw = (f"scale: 'log', domain: [{piso}, {techo * 1.15}],"
+                    if escala_log else f"domain: [0, {techo * 1.15}],")
     render_js = f"""
 const h = React.createElement;
 const {{ ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
@@ -359,8 +372,9 @@ root.render(
     h(RadarChart, {{ data: data, margin: {{ top: 10, right: 30, bottom: 10, left: 30 }} }},
       h(PolarGrid, {{}}),
       h(PolarAngleAxis, {{ dataKey: 'categoria', tick: {{ fontSize: 10, fill: '#54616f' }} }}),
-      h(PolarRadiusAxis, {{ tick: {{ fontSize: 9, fill: '#9aa5b1' }}, tickFormatter: fmtMoney }}),
-      h(Tooltip, {{ formatter: fmtMoney }}),
+      h(PolarRadiusAxis, {{ {eje_radio_kw} tick: {{ fontSize: 9, fill: '#9aa5b1' }},
+                            tickFormatter: fmtMoney }}),
+      h(Tooltip, {{ formatter: (value, name, props) => [props.payload[name + '_etq'], name] }}),
       h(Legend, {{}}),
       {radars_js}
     )
@@ -831,13 +845,21 @@ if pagina == "Utilidad Operativa":
 
         bc1, bc2 = st.columns([1.6, 1])
         with bc1:
+            # Top 10 por volumen combinado: con las 17 aduanas el radar queda
+            # aplastado (las chicas pegadas al centro, ilegibles) -- y escala
+            # log para que un $100k no desaparezca junto a un $1.7M.
+            aduanas_radar = sorted(
+                aduanas_uo,
+                key=lambda a: -(em_por_ad.get(a, 0.0) + rec_por_ad.get(a, 0.0)),
+            )[:10]
             df_radar_uo = pd.DataFrame({
-                "aduana": aduanas_uo,
-                "Emitidas": [float(em_por_ad.get(a, 0.0)) for a in aduanas_uo],
-                "Recibidas": [float(rec_por_ad.get(a, 0.0)) for a in aduanas_uo],
+                "aduana": aduanas_radar,
+                "Emitidas": [float(em_por_ad.get(a, 0.0)) for a in aduanas_radar],
+                "Recibidas": [float(rec_por_ad.get(a, 0.0)) for a in aduanas_radar],
             })
+            st.caption("Top 10 aduanas por volumen combinado (emitida + recibida). Escala logarítmica.")
             radar_recharts(df_radar_uo, "aduana", {"Emitidas": C_EMITIDA, "Recibidas": C_RECIBIDA},
-                          height=480)
+                          height=480, escala_log=True)
         with bc2:
             aduana_uo_sel = st.selectbox(
                 "Seleccionar Aduana", aduanas_uo,
