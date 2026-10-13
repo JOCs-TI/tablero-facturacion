@@ -944,8 +944,6 @@ if pagina == "Utilidad Operativa":
         uo_ad = utilidad_op_f.groupby("aduana")[["emitidas", "HONORARIOS AA", "SUELDOS",
                                                  "recibida", "ingreso", "egreso",
                                                  "utilidad"]].sum()
-        em_por_ad = EM.groupby("aduana")["importe"].sum()
-        rec_por_ad = REC.groupby("aduana")["importe"].sum()
         aduanas_uo = uo_ad.sort_values("utilidad", ascending=False).index.tolist()
 
         bc1, bc2 = st.columns([1.6, 1])
@@ -962,13 +960,13 @@ if pagina == "Utilidad Operativa":
             )[:10]
             df_radar_uo = pd.DataFrame({
                 "aduana": aduanas_radar,
-                "Emitidas": [float(em_por_ad.get(a, 0.0)) for a in aduanas_radar],
+                "Ingreso": [float(uo_ad.loc[a, "ingreso"]) for a in aduanas_radar],
                 "Utilidad Operativa": [float(uo_ad.loc[a, "utilidad"]) for a in aduanas_radar],
             })
             st.caption("Top 10 aduanas por volumen combinado (emitida + recibida). Escala logarítmica. "
                        "Utilidad Operativa negativa se marca en rojo (punto y tooltip).")
             radar_recharts(df_radar_uo, "aduana",
-                          {"Emitidas": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
+                          {"Ingreso": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
                           height=480, escala_log=True,
                           serie_resaltar_negativo="Utilidad Operativa")
         with bc2:
