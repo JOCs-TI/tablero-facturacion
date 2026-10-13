@@ -293,7 +293,8 @@ root.render(
     recharts_component(render_js, data, height=height)
 
 def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fmt_m,
-                   escala_log=False):
+                   escala_log=False, serie_resaltar_negativo=None,
+                   etiqueta_negativo="Pérdida Operativa"):
     """RadarChart (componente nativo de Recharts): un eje por cada valor de
     'categoria_col', un polígono por cada serie en 'series_colores'
     ({nombre_columna: color}). Pensado para comparar 2+ series no-negativas por
@@ -303,31 +304,65 @@ def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fm
     distintos -- si no, las chicas se ven aplastadas al centro, todas pegadas):
     el tooltip/etiqueta siempre muestra el monto real; los valores en 0 (o muy
     chicos) se "pisan" a un piso positivo solo para que el log tenga donde
-    dibujarlos (log(0) no existe)."""
+    dibujarlos (log(0) no existe).
+    'serie_resaltar_negativo' (opcional, nombre de una columna de
+    'series_colores'): un polígono de Recharts es un solo color, no puede
+    pintar un tramo de rojo -- en vez de eso, cada VÉRTICE de esa serie con
+    valor real negativo se marca con un punto rojo (el texto con la cifra NO
+    va pegado al punto: con 2+ negativos en ejes vecinos, ambos quedan
+    "pisados" cerca del centro y sus etiquetas se encimaban sin importar el
+    acomodo -- en vez de eso, esta función regresa la lista para que quien la
+    llama la muestre como texto aparte, debajo de la gráfica).
+    Regresa: lista de (categoria, etiqueta_formateada) de la serie resaltada
+    con valor negativo (vacía si 'serie_resaltar_negativo' es None)."""
     valores_todos = [float(row[s]) for _, row in df.iterrows() for s in series_colores]
     positivos = [v for v in valores_todos if v > 0]
     piso = (min(positivos) / 3) if escala_log and positivos else 0.0
     techo = max(valores_todos) if valores_todos else 1.0
     data = []
+    negativos = []
     for _, row in df.iterrows():
         d = {"categoria": str(row[categoria_col])}
         for serie in series_colores:
             v = float(row[serie])
             d[serie] = max(v, piso) if escala_log else v
             d[f"{serie}_etq"] = formateador(v)
+            d[f"{serie}_neg"] = v < 0
+            if serie == serie_resaltar_negativo and v < 0:
+                negativos.append((d["categoria"], d[f"{serie}_etq"]))
         data.append(d)
-    radars_js = "\n".join(
-        f"""h(Radar, {{ name: {json.dumps(serie)}, dataKey: {json.dumps(serie)},
-                     stroke: '{color}', fill: '{color}', fillOpacity: 0.25,
-                     isAnimationActive: false }}),"""
-        for serie, color in series_colores.items()
-    )
+    funciones_punto = []
+    elementos_radar = []
+    for serie, color in series_colores.items():
+        if serie == serie_resaltar_negativo:
+            nombre_fn = "Punto_" + "".join(c if c.isalnum() else "_" for c in serie)
+            funciones_punto.append(f"""
+function {nombre_fn}(props) {{
+  // Recharts anida: props.payload = {{x,y,cx,cy,radius,angle,name,value, payload: <fila real>}}
+  const {{ cx, cy }} = props;
+  const fila = props.payload.payload;
+  const neg = fila[{json.dumps(serie + "_neg")}];
+  const color = neg ? '{C_NEG}' : '{color}';
+  return h('circle', {{ cx, cy, r: 4, fill: color, stroke: '#FFFFFF', strokeWidth: 1 }});
+}}""")
+            elementos_radar.append(
+                f"""h(Radar, {{ name: {json.dumps(serie)}, dataKey: {json.dumps(serie)},
+                             stroke: '{color}', fill: '{color}', fillOpacity: 0.25,
+                             dot: h({nombre_fn}), isAnimationActive: false }}),""")
+        else:
+            elementos_radar.append(
+                f"""h(Radar, {{ name: {json.dumps(serie)}, dataKey: {json.dumps(serie)},
+                             stroke: '{color}', fill: '{color}', fillOpacity: 0.25,
+                             isAnimationActive: false }}),""")
+    funciones_punto_js = "\n".join(funciones_punto)
+    elementos_radar_js = "\n".join(elementos_radar)
     eje_radio_kw = (f"scale: 'log', domain: [{piso}, {techo * 1.15}],"
                     if escala_log else f"domain: [0, {techo * 1.15}],")
     render_js = f"""
 const h = React.createElement;
 const {{ ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
          Tooltip, Legend }} = Recharts;
+{funciones_punto_js}
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
@@ -337,12 +372,13 @@ root.render(
       h(PolarRadiusAxis, {{ {eje_radio_kw} tick: false, axisLine: false }}),
       h(Tooltip, {{ formatter: (value, name, props) => [props.payload[name + '_etq'], name] }}),
       h(Legend, {{}}),
-      {radars_js}
+      {elementos_radar_js}
     )
   )
 );
 """
     recharts_component(render_js, data, height=height)
+    return negativos
 
 _treemap_click_component = components.declare_component(
     "treemap_click", path=str(BASE / "components" / "treemap_click"))
@@ -913,9 +949,15 @@ if pagina == "Utilidad Operativa":
             st.caption("Top 10 aduanas por volumen combinado (emitida + recibida). Escala logarítmica. "
                        "Utilidad Operativa negativa o cero se dibuja pegada al centro (el valor real "
                        "se ve en el tooltip).")
-            radar_recharts(df_radar_uo, "aduana",
-                          {"Emitidas": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
-                          height=480, escala_log=True)
+            negativos_radar = radar_recharts(
+                df_radar_uo, "aduana", {"Emitidas": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
+                height=480, escala_log=True, serie_resaltar_negativo="Utilidad Operativa")
+            if negativos_radar:
+                lista_neg = " &nbsp;·&nbsp; ".join(f"<b>{a}</b> {et}" for a, et in negativos_radar)
+                st.markdown(
+                    f'<p style="color:{C_NEG}; font-size:0.85rem; margin-top:-8px;">'
+                    f'Pérdida Operativa: {lista_neg}</p>',
+                    unsafe_allow_html=True)
         with bc2:
             aduana_uo_sel = st.selectbox(
                 "Seleccionar Aduana", aduanas_uo,
