@@ -976,11 +976,16 @@ if pagina == "Utilidad Operativa":
             fila = uo_ad.loc[aduana_uo_sel]
             ingresos_sel = float(fila["ingreso"])
             pct_uo_sel = fila["utilidad"] / ingresos_sel if ingresos_sel else None
+            # IMILE LAREDO no factura por el SAT (ver load_imile_laredo_extra): su
+            # 'emitidas' real es $0 aunque sí tiene actividad real -- en la ficha de
+            # detalle se muestra el mismo monto que 'Ingresos' en vez de $0, solo
+            # para esta aduana, para no sugerir que no factura nada.
+            emitidas_sel = ingresos_sel if aduana_uo_sel == "IMILE LAREDO" else float(fila["emitidas"])
             # Montos exactos (sin redondear a $X.XM/$Xk) para poder auditarlos a detalle.
             tabla_uo = pd.DataFrame({
                 "Concepto": ["Emitidas", "Honorarios AA", "Ingresos", "Recibidas", "Sueldos",
                             "Egresos", "Utilidad Operativa", "% Utilidad Operativa"],
-                "Valor": [fmt(float(fila["emitidas"])), fmt(float(fila["HONORARIOS AA"])),
+                "Valor": [fmt(emitidas_sel), fmt(float(fila["HONORARIOS AA"])),
                          fmt(ingresos_sel), fmt(float(fila["recibida"])),
                          fmt(float(fila["SUELDOS"])), fmt(float(fila["egreso"])),
                          fmt(float(fila["utilidad"])),
@@ -989,9 +994,10 @@ if pagina == "Utilidad Operativa":
             st.dataframe(tabla_uo, use_container_width=True, hide_index=True)
             if aduana_uo_sel == "IMILE LAREDO":
                 st.caption("IMILE LAREDO factura a una empresa extranjera que no pasa por el "
-                           "SAT mexicano, por eso 'Emitidas'/'Recibidas' (facturas reales) dan "
-                           "$0 — 'Ingresos'/'Egresos' sí incluyen su propia hoja 'imile laredo' "
-                           "(Ingreso/Gasto Neto + Costo de Referencia del mes).")
+                           "SAT mexicano: 'Emitidas' aquí muestra el mismo monto que 'Ingresos' "
+                           "(de su propia hoja 'imile laredo') en vez de $0 — 'Recibidas' sigue "
+                           "siendo la factura real registrada, muy por debajo de 'Egresos' por "
+                           "la misma razón.")
 
         st.divider()
         st.subheader("Pareto de Utilidad Operativa (todo CC)")
