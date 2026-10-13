@@ -73,10 +73,11 @@ servicio de Google Cloud, pero la organización `jocs.com.mx` bloquea la
 creación de llaves de cuentas de servicio por política; de ahí el cambio a
 link público de solo lectura.
 
-Se usan 6 de las pestañas del libro: `emitidas`, `recibidas`, `sueldos`,
-`honorarios josefa`, `costos de referencia`, `UTILIDAD OPERATIVA`. El resto
-(`corresponsalias` -- ya no se usa tras el rediseño a 4 pestañas --, `reglas`,
-`CC`, `Aduanas`, `imile laredo`) no se usa todavía. **`AMEX ALEJANDRO` y `AMEX
+Se usan 7 de las pestañas del libro: `emitidas`, `recibidas`, `sueldos`,
+`honorarios josefa`, `costos de referencia`, `UTILIDAD OPERATIVA`, `imile
+laredo` (esta última solo para la aduana IMILE LAREDO: ver más abajo). El
+resto (`corresponsalias` -- ya no se usa tras el rediseño a 4 pestañas --,
+`reglas`, `CC`, `Aduanas`) no se usa todavía. **`AMEX ALEJANDRO` y `AMEX
 JOSEFA` ya están en el Sheets** (agregadas 2026-10-13) pero la pestaña "Tarjeta
 de Crédito" que las va a usar todavía no está construida — ver el aviso en esa
 página. Ojo con la calidad de esas 2 hojas: columnas inconsistentes entre
@@ -90,11 +91,24 @@ Cosas que hay que saber:
 1. **El monto oficial es `MONTO`/`monto 1`, no `Importe`.** Hay líneas con
    importe pero sin monto (sobre todo IMSS/Infonavit/honorarios en STAFF) que
    el usuario deja fuera del cierre a propósito — no se suman a las cifras.
-2. **Utilidad Operativa = Ingresos + Honorarios AA − Sueldos − Gastos**
-   (confirmado con el usuario; Honorarios AA es ingreso adicional, no costo).
+2. **Utilidad Operativa = Ingresos − Egresos**, donde **Ingresos = Emitidas +
+   Honorarios AA** y **Egresos = Recibida + Sueldos** — las columnas `INGRESOS`
+   y `GASTOS` de la hoja `UTILIDAD OPERATIVA` **no se usan** como cifra de
+   negocio (solo quedan como sentinela técnico para filtrar la fila basura).
+   Confirmado con el usuario tras notar que ninguna de las dos cuadraba con el
+   dato real de facturación (`emitidas`/`recibidas`). 5 de las 17 aduanas de
+   esa hoja tienen nombres que no calzan exacto con `emitidas` (`ALIAS_ADUANA_UO`
+   los normaliza: `AMAZON 1 (JUSTO)`→`AMAZON 1`, `AMAZON 2 (CARGA)`→`AMAZON 2`,
+   `LAZARO CARDENAS`→`LAZARO`, `TOLUCA BSO`→`TOLUCA`, `IMILE`→`IMILE AIFA`).
    El Pareto de esta página ordena por **magnitud absoluta** (no por el valor
    con signo) ya que la utilidad puede ser negativa por aduana — un % acumulado
    no tiene sentido sobre una suma que cruza por cero.
+   **IMILE LAREDO es un caso especial**: factura a una empresa extranjera que no
+   pasa por el SAT mexicano, así que `emitidas`/`recibidas` la traen casi en $0.
+   Su P&L real vive en la pestaña `imile laredo` (una columna por mes) y se suma
+   encima (`load_imile_laredo_extra()`): Ingreso Neto + (Gasto Neto + Costo de
+   Referencia) del mes vigente. Sueldos no se repite (ya viene en `UTILIDAD
+   OPERATIVA` con el mismo monto).
 3. **La cascada de nómina incluye "Excedente"**, que no aparece en la maqueta
    del documento pero sí es parte real del total (`TOTAL2`).
 4. **"Cuotas Patronales" en Nómina está pendiente de revisión** (aviso visible
