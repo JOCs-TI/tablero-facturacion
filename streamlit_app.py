@@ -966,10 +966,28 @@ if pagina == "Gastos por Concepto":
         "pct": dona.values / base_pct if base_pct else 0.0,
         "orden": range(len(dona)),
     })
+    # Rebanada minima: una rebanada de <1% practicamente no se ve (ni cabe su %
+    # adentro) -- se le da un piso de angulo (aqui 3% del circulo) quitandoselo
+    # proporcionalmente a las demas, nada mas para el DIBUJO (theta); el monto y
+    # el % reales (tooltip, leyenda, texto) no cambian, solo el tamaño del gajo.
+    PISO_FRAC = 0.03
+    chicas = df_dona["pct"] < PISO_FRAC
+    if chicas.any() and not chicas.all() and chicas.sum() * PISO_FRAC < 1:
+        presupuesto_chicas = chicas.sum() * PISO_FRAC
+        suma_grandes = df_dona.loc[~chicas, "pct"].sum()
+        escala = (1 - presupuesto_chicas) / suma_grandes if suma_grandes else 1
+        df_dona["theta_val"] = df_dona["pct"].where(chicas, df_dona["pct"] * escala)
+        df_dona.loc[chicas, "theta_val"] = PISO_FRAC
+    else:
+        df_dona["theta_val"] = df_dona["pct"]
+    # Con el piso de arriba, una rebanada de 0.4% ya se ve -- pero ".0%" la
+    # redondearia a "0%", que contradice que se vea un gajo ahi. Un decimal
+    # para las chicas, entero para el resto (como ya se via antes).
+    df_dona["pct_etq"] = df_dona["pct"].map(lambda p: f"{p*100:.1f}%" if p < 0.01 else f"{p*100:.0f}%")
     r_out, r_in = 300, 160
     arcos = alt.Chart(df_dona).mark_arc(innerRadius=r_in, outerRadius=r_out,
                                         stroke="#FFFFFF", strokeWidth=2).encode(
-        theta=alt.Theta("valor:Q", stack=True),
+        theta=alt.Theta("theta_val:Q", stack=True),
         order=alt.Order("orden:Q"),
         color=alt.Color("leyenda:N", sort=etiquetas,
                         scale=alt.Scale(domain=etiquetas, range=colores),
@@ -981,8 +999,8 @@ if pagina == "Gastos por Concepto":
     )
     pct_text = alt.Chart(df_dona).mark_text(radius=(r_in + r_out) / 2, fontSize=14,
                                              color="#FFFFFF").encode(
-        theta=alt.Theta("valor:Q", stack=True), order=alt.Order("orden:Q"),
-        text=alt.Text("pct:Q", format=".0%"),
+        theta=alt.Theta("theta_val:Q", stack=True), order=alt.Order("orden:Q"),
+        text="pct_etq:N",
     )
     centro1 = alt.Chart(pd.DataFrame({"t": [fmt_m(tot_gasto)]})).mark_text(
         fontSize=22, fontWeight=700, color=JOCS_AZUL, dy=-8).encode(text="t:N")
