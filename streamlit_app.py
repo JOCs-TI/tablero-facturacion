@@ -751,20 +751,29 @@ MARGEN = TOT_EM - TOT_REC
 MARGEN_PCT = MARGEN / TOT_EM if TOT_EM else None
 
 # Ingreso real por aduana = Emitidas (factura real, hoja 'emitidas') + Honorarios AA
-# (hoja 'UTILIDAD OPERATIVA'); la columna INGRESOS de esa hoja NO se usa para esto
-# (el usuario lo aclaró explícitamente: "emitidas y honorarios se tendrían que
-# sumar para dar el ingreso"). Utilidad Operativa = ese ingreso - Sueldos - Gastos,
-# misma regla para todas las aduanas. Se cruza por (aduana, periodo_label) por si
-# algún día hay más de un periodo cargado.
+# (hoja 'UTILIDAD OPERATIVA'); Egreso real = Recibida (factura real, hoja
+# 'recibidas') + Sueldos. Ni la columna INGRESOS ni la columna GASTOS de la hoja
+# 'UTILIDAD OPERATIVA' se usan para esto -- el usuario aclaró explícitamente que
+# Ingreso = Emitidas + Honorarios, y que Egreso debía calcularse igual
+# (Recibida + Sueldos) tras notar que GASTOS no cuadraba con Recibida + Sueldos
+# (diferian ~6% para IMILE AIFA). Utilidad Operativa = Ingreso - Egreso, misma
+# regla para todas las aduanas. Se cruza por (aduana, periodo_label) por si algún
+# día hay más de un periodo cargado.
 if not utilidad_op_f.empty:
     em_por_aduana_periodo = EM.groupby(["aduana", "periodo_label"])["importe"].sum()
+    rec_por_aduana_periodo = REC.groupby(["aduana", "periodo_label"])["importe"].sum()
     utilidad_op_f = utilidad_op_f.copy()
     utilidad_op_f["emitidas"] = [
         em_por_aduana_periodo.get((a, p), 0.0)
         for a, p in zip(utilidad_op_f["aduana"], utilidad_op_f["periodo_label"])
     ]
+    utilidad_op_f["recibida"] = [
+        rec_por_aduana_periodo.get((a, p), 0.0)
+        for a, p in zip(utilidad_op_f["aduana"], utilidad_op_f["periodo_label"])
+    ]
     utilidad_op_f["ingreso"] = utilidad_op_f["emitidas"] + utilidad_op_f["HONORARIOS AA"]
-    utilidad_op_f["utilidad"] = utilidad_op_f["ingreso"] - utilidad_op_f["SUELDOS"] - utilidad_op_f["GASTOS"]
+    utilidad_op_f["egreso"] = utilidad_op_f["recibida"] + utilidad_op_f["SUELDOS"]
+    utilidad_op_f["utilidad"] = utilidad_op_f["ingreso"] - utilidad_op_f["egreso"]
 
 cobertura_concepto = (REC.loc[REC["concepto_cierre"].notna(), "importe"].sum() / TOT_REC) if TOT_REC else 0.0
 
@@ -798,13 +807,13 @@ if pagina == "Utilidad Operativa":
     else:
         st.divider()
         st.subheader("Utilidad Operativa")
-        st.caption("Utilidad Operativa = Ingresos + Honorarios AA − Sueldos − Gastos, donde "
-                   "Ingresos = Emitidas (hoja 'emitidas') + Honorarios AA (hoja 'UTILIDAD "
-                   "OPERATIVA').")
-        tot = utilidad_op_f[["emitidas", "HONORARIOS AA", "SUELDOS", "GASTOS"]].sum()
+        st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
+                   "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
+                   "+ Sueldos (ambos de la hoja 'UTILIDAD OPERATIVA').")
+        tot = utilidad_op_f[["emitidas", "HONORARIOS AA", "SUELDOS", "recibida"]].sum()
         df_uo = pd.DataFrame({
-            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Gastos"],
-            "valor": [tot["emitidas"], tot["HONORARIOS AA"], -tot["SUELDOS"], -tot["GASTOS"]],
+            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Recibidas"],
+            "valor": [tot["emitidas"], tot["HONORARIOS AA"], -tot["SUELDOS"], -tot["recibida"]],
         })
         waterfall_recharts(df_uo, "label", "valor",
                           color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
@@ -813,7 +822,8 @@ if pagina == "Utilidad Operativa":
         st.divider()
         st.subheader("Utilidad Operativa por Aduana")
         uo_ad = utilidad_op_f.groupby("aduana")[["emitidas", "HONORARIOS AA", "SUELDOS",
-                                                 "GASTOS", "ingreso", "utilidad"]].sum()
+                                                 "recibida", "ingreso", "egreso",
+                                                 "utilidad"]].sum()
         em_por_ad = EM.groupby("aduana")["importe"].sum()
         rec_por_ad = REC.groupby("aduana")["importe"].sum()
         aduanas_uo = uo_ad.sort_values("utilidad", ascending=False).index.tolist()
@@ -843,16 +853,16 @@ if pagina == "Utilidad Operativa":
                 "Seleccionar Aduana", aduanas_uo,
                 format_func=lambda a: f"{a}  ·  {fmt_m(uo_ad.loc[a, 'utilidad'])}")
             fila = uo_ad.loc[aduana_uo_sel]
-            emit_sel = float(em_por_ad.get(aduana_uo_sel, 0.0))
-            rec_sel = float(rec_por_ad.get(aduana_uo_sel, 0.0))
             ingresos_sel = float(fila["ingreso"])
             pct_uo_sel = fila["utilidad"] / ingresos_sel if ingresos_sel else None
+            # Montos exactos (sin redondear a $X.XM/$Xk) para poder auditarlos a detalle.
             tabla_uo = pd.DataFrame({
                 "Concepto": ["Emitidas", "Honorarios AA", "Ingresos", "Recibidas", "Sueldos",
                             "Egresos", "Utilidad Operativa", "% Utilidad Operativa"],
-                "Valor": [fmt_m(emit_sel), fmt_m(float(fila["HONORARIOS AA"])), fmt_m(ingresos_sel),
-                         fmt_m(rec_sel), fmt_m(float(fila["SUELDOS"])), fmt_m(float(fila["GASTOS"])),
-                         fmt_m(float(fila["utilidad"])),
+                "Valor": [fmt(float(fila["emitidas"])), fmt(float(fila["HONORARIOS AA"])),
+                         fmt(ingresos_sel), fmt(float(fila["recibida"])),
+                         fmt(float(fila["SUELDOS"])), fmt(float(fila["egreso"])),
+                         fmt(float(fila["utilidad"])),
                          pct(pct_uo_sel) if pct_uo_sel is not None else "—"],
             })
             st.dataframe(tabla_uo, use_container_width=True, hide_index=True)
