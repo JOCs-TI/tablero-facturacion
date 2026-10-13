@@ -334,8 +334,7 @@ root.render(
     h(RadarChart, {{ data: data, margin: {{ top: 10, right: 30, bottom: 10, left: 30 }} }},
       h(PolarGrid, {{}}),
       h(PolarAngleAxis, {{ dataKey: 'categoria', tick: {{ fontSize: 10, fill: '#54616f' }} }}),
-      h(PolarRadiusAxis, {{ {eje_radio_kw} tick: {{ fontSize: 9, fill: '#9aa5b1' }},
-                            tickFormatter: fmtMoney }}),
+      h(PolarRadiusAxis, {{ {eje_radio_kw} tick: false, axisLine: false }}),
       h(Tooltip, {{ formatter: (value, name, props) => [props.payload[name + '_etq'], name] }}),
       h(Legend, {{}}),
       {radars_js}
