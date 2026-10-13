@@ -278,7 +278,11 @@ root.render(
       h(YAxis, {{ yAxisId: 'der', orientation: 'right', domain: [0, 1.05],
                  tickFormatter: v => Math.round(v * 100) + '%',
                  tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(Tooltip, {{}}),
+      h(Tooltip, {{ formatter: (value, name) => {{
+        if (name === 'valor') return [fmtMoney(value), 'Monto'];
+        if (name === 'acumulado') return [Math.round(value * 100) + '%', '% acumulado'];
+        return [value, name];
+      }} }}),
       h(ReferenceLine, {{ yAxisId: 'der', y: {umbral}, stroke: '{C_NEG}', strokeDasharray: '4 3' }}),
       h(Bar, {{ yAxisId: 'izq', dataKey: 'valor', radius: [3, 3, 0, 0], isAnimationActive: false }},
         data.map((d, i) => h(Cell, {{ key: i, fill: d.color }})),
