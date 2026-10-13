@@ -623,12 +623,59 @@ def load_utilidad_operativa():
         partes.append(out)
     return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
 
+MES_COL_MAYUS = {1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO",
+                 7: "JULIO", 8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE",
+                 12: "DICIEMBRE"}
+
+@st.cache_data(show_spinner=False)
+def load_imile_laredo_extra():
+    """Hoja 'imile laredo': P&L mensual propio de esa aduana, con su propia
+    columna por mes (ENERO..DICIEMBRE). El usuario pidió sumar el mes vigente
+    a lo que ya se tiene para la aduana IMILE LAREDO -- esa aduana da $0 en
+    'emitidas'/'recibidas' porque (nota suelta en la propia hoja, columna MAYO
+    de la sección GASTO) "el problema [es que] todo lo demás de este centro de
+    costos es de una empresa gringa, y la info la tenemos que alimentar
+    nosotros porque no aparece en el sat" -- o sea, esos clientes no facturan
+    por el SAT mexicano, por eso no aparecen en las hojas normales.
+    Se suman Ingreso Neto y (Gasto Neto + Costo de Referencia); Sueldos NO se
+    repite aquí (ya viene en 'UTILIDAD OPERATIVA' para esta misma aduana, con
+    el mismo monto -- verificado: $201,374.64 en ambas hojas)."""
+    partes = []
+    for anio, mes, path in descubrir_archivos():
+        etiqueta = f"{MESES[mes]} {anio}" if mes else path.stem
+        hojas = {h.strip().lower(): h for h in pd.ExcelFile(path).sheet_names}
+        if "imile laredo" not in hojas:
+            continue
+        col_mes = MES_COL_MAYUS.get(mes)
+        if col_mes is None:
+            continue
+        df = pd.read_excel(path, sheet_name=hojas["imile laredo"], header=0)
+        df.columns = [str(c).strip() for c in df.columns]
+        if col_mes not in df.columns:
+            continue
+        etiquetas_fila = coalesce_col(df, "INGRESOS").map(
+            lambda s: s.strip().upper() if isinstance(s, str) else None)
+
+        def _valor(nombre_fila, etiquetas_fila=etiquetas_fila, df=df, col_mes=col_mes):
+            m = etiquetas_fila == nombre_fila
+            if not m.any():
+                return 0.0
+            return float(pd.to_numeric(df.loc[m, col_mes], errors="coerce").fillna(0.0).sum())
+
+        partes.append({
+            "aduana": "IMILE LAREDO", "anio": anio, "mes": mes, "periodo_label": etiqueta,
+            "ingreso_extra": _valor("INGRESO NETO"),
+            "egreso_extra": _valor("GASTO NETO") + _valor("TOTAL CTO DE REFERENCIA"),
+        })
+    return pd.DataFrame(partes)
+
 try:
     df, periodos = load_data()
     sueldos_df = load_sueldos()
     josefa_df = load_honorarios_josefa()
     costos_ref_df = load_costos_referencia()
     utilidad_op_df = load_utilidad_operativa()
+    imile_laredo_extra_df = load_imile_laredo_extra()
 except Exception as e:
     st.error(f"Error al descargar/leer los datos de Google Sheets:\n\n`{SHEET_EXPORT_URL}`\n\n{e}")
     st.stop()
@@ -741,6 +788,7 @@ sueldos_f = _filtra_periodo_aduana(sueldos_df)
 josefa_f = _filtra_periodo_aduana(josefa_df)
 costos_ref_f = _filtra_periodo_aduana(costos_ref_df)
 utilidad_op_f = _filtra_periodo_aduana(utilidad_op_df)
+imile_laredo_extra_f = _filtra_periodo_aduana(imile_laredo_extra_df)
 
 EM = d[d["tipo_factura"] == "EMITIDA"]
 REC = d[d["tipo_factura"] == "RECIBIDA"]
@@ -773,6 +821,19 @@ if not utilidad_op_f.empty:
     ]
     utilidad_op_f["ingreso"] = utilidad_op_f["emitidas"] + utilidad_op_f["HONORARIOS AA"]
     utilidad_op_f["egreso"] = utilidad_op_f["recibida"] + utilidad_op_f["SUELDOS"]
+
+    # IMILE LAREDO factura a una empresa extranjera que no pasa por el SAT, por
+    # eso no aparece en 'emitidas'/'recibidas' -- su Ingreso/Gasto real vive en
+    # su propia hoja ('imile laredo'), que se suma aquí encima de lo ya calculado
+    # (a pedido del usuario). Sueldos no se repite (ya viene en la hoja principal).
+    if not imile_laredo_extra_f.empty:
+        extra_map = imile_laredo_extra_f.set_index(["aduana", "periodo_label"])
+        for idx in utilidad_op_f.index:
+            key = (utilidad_op_f.at[idx, "aduana"], utilidad_op_f.at[idx, "periodo_label"])
+            if key in extra_map.index:
+                utilidad_op_f.at[idx, "ingreso"] += extra_map.at[key, "ingreso_extra"]
+                utilidad_op_f.at[idx, "egreso"] += extra_map.at[key, "egreso_extra"]
+
     utilidad_op_f["utilidad"] = utilidad_op_f["ingreso"] - utilidad_op_f["egreso"]
 
 cobertura_concepto = (REC.loc[REC["concepto_cierre"].notna(), "importe"].sum() / TOT_REC) if TOT_REC else 0.0
@@ -810,10 +871,14 @@ if pagina == "Utilidad Operativa":
         st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
                    "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
                    "+ Sueldos (ambos de la hoja 'UTILIDAD OPERATIVA').")
-        tot = utilidad_op_f[["emitidas", "HONORARIOS AA", "SUELDOS", "recibida"]].sum()
+        tot = utilidad_op_f[["HONORARIOS AA", "SUELDOS", "ingreso", "egreso"]].sum()
+        # "Ingresos"/"Recibidas" se leen de ingreso/egreso (ya con el ajuste de
+        # IMILE LAREDO sumado) menos su componente que ya va en otra barra --
+        # así el total de la cascada cuadra con la suma de utilidad por aduana.
         df_uo = pd.DataFrame({
             "label": ["Ingresos", "Honorarios AA", "Sueldos", "Recibidas"],
-            "valor": [tot["emitidas"], tot["HONORARIOS AA"], -tot["SUELDOS"], -tot["recibida"]],
+            "valor": [tot["ingreso"] - tot["HONORARIOS AA"], tot["HONORARIOS AA"],
+                     -tot["SUELDOS"], -(tot["egreso"] - tot["SUELDOS"])],
         })
         waterfall_recharts(df_uo, "label", "valor",
                           color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
@@ -832,10 +897,13 @@ if pagina == "Utilidad Operativa":
         with bc1:
             # Top 10 por volumen combinado: con las 17 aduanas el radar queda
             # aplastado (las chicas pegadas al centro, ilegibles) -- y escala
-            # log para que un $100k no desaparezca junto a un $1.7M.
+            # log para que un $100k no desaparezca junto a un $1.7M. Se ordena por
+            # ingreso+egreso YA ajustado (no por emitida+recibida cruda), para que
+            # IMILE LAREDO entre al top 10 con su actividad real (ver nota arriba:
+            # no factura por el SAT, así que su emitida/recibida real es $0).
             aduanas_radar = sorted(
                 aduanas_uo,
-                key=lambda a: -(em_por_ad.get(a, 0.0) + rec_por_ad.get(a, 0.0)),
+                key=lambda a: -(uo_ad.loc[a, "ingreso"] + uo_ad.loc[a, "egreso"]),
             )[:10]
             df_radar_uo = pd.DataFrame({
                 "aduana": aduanas_radar,
@@ -866,6 +934,11 @@ if pagina == "Utilidad Operativa":
                          pct(pct_uo_sel) if pct_uo_sel is not None else "—"],
             })
             st.dataframe(tabla_uo, use_container_width=True, hide_index=True)
+            if aduana_uo_sel == "IMILE LAREDO":
+                st.caption("IMILE LAREDO factura a una empresa extranjera que no pasa por el "
+                           "SAT mexicano, por eso 'Emitidas'/'Recibidas' (facturas reales) dan "
+                           "$0 — 'Ingresos'/'Egresos' sí incluyen su propia hoja 'imile laredo' "
+                           "(Ingreso/Gasto Neto + Costo de Referencia del mes).")
 
         st.divider()
         st.subheader("Pareto de Utilidad Operativa (todo CC)")
