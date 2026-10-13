@@ -475,12 +475,43 @@ def load_costos_referencia():
         partes.append(out)
     return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
 
+@st.cache_data(show_spinner=False)
+def load_utilidad_operativa():
+    """Ingresos, Honorarios AA, Sueldos y Gastos por aduana (hoja 'UTILIDAD OPERATIVA').
+    Utilidad Operativa = Ingresos + Honorarios AA - Sueldos - Gastos (Honorarios AA se
+    trata como ingreso adicional, confirmado con el usuario)."""
+    cols_monto = ["INGRESOS", "HONORARIOS AA", "SUELDOS", "GASTOS"]
+    partes = []
+    for anio, mes, path in descubrir_archivos():
+        etiqueta = f"{MESES[mes]} {anio}" if mes else path.stem
+        hojas = {h.strip().lower(): h for h in pd.ExcelFile(path).sheet_names}
+        if "utilidad operativa" not in hojas:
+            continue
+        df = pd.read_excel(path, sheet_name=hojas["utilidad operativa"], header=0)
+        df.columns = [str(c).strip() for c in df.columns]
+        out = pd.DataFrame(index=df.index)
+        for col in cols_monto:
+            out[col] = pd.to_numeric(coalesce_col(df, col), errors="coerce")
+        # La hoja trae una fila basura ("INGRESOS"/"AGOSTO"...) sin montos numericos
+        # y una fila TOTAL al final; ambas se excluyen (el total se calcula aqui).
+        out = out[out["INGRESOS"].notna()].copy()
+        out["aduana"] = coalesce_col(df, df.columns[0]).map(_normaliza_aduana)
+        out = out[out["aduana"] != "TOTAL"]
+        out[cols_monto] = out[cols_monto].fillna(0.0)
+        out = out[(out[cols_monto] != 0).any(axis=1)]  # sin actividad en ningun rubro
+        out["utilidad"] = out["INGRESOS"] + out["HONORARIOS AA"] - out["SUELDOS"] - out["GASTOS"]
+        out["aduana"] = out["aduana"].fillna("SIN ADUANA")
+        out["anio"], out["mes"], out["periodo_label"] = anio, mes, etiqueta
+        partes.append(out)
+    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
+
 try:
     df, periodos = load_data()
     sueldos_df = load_sueldos()
     corres_df = load_corresponsalias()
     josefa_df = load_honorarios_josefa()
     costos_ref_df = load_costos_referencia()
+    utilidad_op_df = load_utilidad_operativa()
 except Exception as e:
     st.error(f"Error al descargar/leer los datos de Google Sheets:\n\n`{SHEET_EXPORT_URL}`\n\n{e}")
     st.stop()
@@ -594,6 +625,7 @@ sueldos_f = _filtra_periodo_aduana(sueldos_df)
 corres_f = _filtra_periodo_aduana(corres_df)
 josefa_f = _filtra_periodo_aduana(josefa_df)
 costos_ref_f = _filtra_periodo_aduana(costos_ref_df)
+utilidad_op_f = _filtra_periodo_aduana(utilidad_op_df)
 
 EM = d[d["tipo_factura"] == "EMITIDA"]
 REC = d[d["tipo_factura"] == "RECIBIDA"]
@@ -629,6 +661,21 @@ if pagina == "Panorama":
     if n_sin_monto:
         st.caption(f"{n_sin_monto:,} líneas traen importe pero no monto en el Excel "
                    f"({fmt(importe_sin_monto)} de importe) y no se suman a las cifras.")
+
+    if not utilidad_op_f.empty:
+        st.divider()
+        st.subheader("Utilidad Operativa")
+        st.caption("Utilidad Operativa = Ingresos + Honorarios AA − Sueldos − Gastos "
+                   "(hoja 'UTILIDAD OPERATIVA' del Sheets).")
+        tot = utilidad_op_f[["INGRESOS", "HONORARIOS AA", "SUELDOS", "GASTOS"]].sum()
+        df_uo = pd.DataFrame({
+            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Gastos"],
+            "valor": [tot["INGRESOS"], tot["HONORARIOS AA"], -tot["SUELDOS"], -tot["GASTOS"]],
+        })
+        cascada_uo = waterfall_chart(df_uo, "label", "valor",
+                                     color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
+                                     total_label="Utilidad Operativa", height=400)
+        st.altair_chart(tema(cascada_uo), use_container_width=True)
 
     st.divider()
     st.subheader("Emitida vs Recibida por mes")
