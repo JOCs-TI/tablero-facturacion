@@ -308,19 +308,14 @@ def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fm
     'serie_resaltar_negativo' (opcional, nombre de una columna de
     'series_colores'): un polígono de Recharts es un solo color, no puede
     pintar un tramo de rojo -- en vez de eso, cada VÉRTICE de esa serie con
-    valor real negativo se marca con un punto rojo (el texto con la cifra NO
-    va pegado al punto: con 2+ negativos en ejes vecinos, ambos quedan
-    "pisados" cerca del centro y sus etiquetas se encimaban sin importar el
-    acomodo -- en vez de eso, esta función regresa la lista para que quien la
-    llama la muestre como texto aparte, debajo de la gráfica).
-    Regresa: lista de (categoria, etiqueta_formateada) de la serie resaltada
-    con valor negativo (vacía si 'serie_resaltar_negativo' es None)."""
+    valor real negativo se marca con un punto rojo, y el tooltip (recuadro al
+    pasar el mouse) muestra esa línea en rojo con la etiqueta
+    '{etiqueta_negativo}' en vez del nombre de la serie."""
     valores_todos = [float(row[s]) for _, row in df.iterrows() for s in series_colores]
     positivos = [v for v in valores_todos if v > 0]
     piso = (min(positivos) / 3) if escala_log and positivos else 0.0
     techo = max(valores_todos) if valores_todos else 1.0
     data = []
-    negativos = []
     for _, row in df.iterrows():
         d = {"categoria": str(row[categoria_col])}
         for serie in series_colores:
@@ -328,8 +323,6 @@ def radar_recharts(df, categoria_col, series_colores, height=420, formateador=fm
             d[serie] = max(v, piso) if escala_log else v
             d[f"{serie}_etq"] = formateador(v)
             d[f"{serie}_neg"] = v < 0
-            if serie == serie_resaltar_negativo and v < 0:
-                negativos.append((d["categoria"], d[f"{serie}_etq"]))
         data.append(d)
     funciones_punto = []
     elementos_radar = []
@@ -358,11 +351,34 @@ function {nombre_fn}(props) {{
     elementos_radar_js = "\n".join(elementos_radar)
     eje_radio_kw = (f"scale: 'log', domain: [{piso}, {techo * 1.15}],"
                     if escala_log else f"domain: [0, {techo * 1.15}],")
+    # Tooltip a la medida: el de Recharts por default pinta cada linea del
+    # color de su serie -- aqui, si la fila es la serie resaltada Y es
+    # negativa, esa linea del recuadro se pinta de rojo con la etiqueta
+    # "{etiqueta_negativo}" en vez del nombre real de la serie.
+    tooltip_js = f"""
+function TooltipRadar(props) {{
+  const {{ active, payload, label }} = props;
+  if (!active || !payload || !payload.length) return null;
+  return h('div', {{ style: {{ background: '#fff', border: '1px solid #d7dce1',
+                             borderRadius: 6, padding: '8px 12px', fontSize: 13 }} }},
+    h('div', {{ style: {{ fontWeight: 700, marginBottom: 4, color: '{JOCS_AZUL}' }} }}, label),
+    ...payload.map((entry, i) => {{
+      const fila = entry.payload.payload || entry.payload;
+      const neg = fila[entry.dataKey + '_neg'];
+      const esSerieResaltada = entry.dataKey === {json.dumps(serie_resaltar_negativo)};
+      const nombre = (neg && esSerieResaltada) ? {json.dumps(etiqueta_negativo)} : entry.name;
+      const color = (neg && esSerieResaltada) ? '{C_NEG}' : entry.color;
+      return h('div', {{ key: i, style: {{ color }} }},
+        nombre + ' : ' + fila[entry.dataKey + '_etq']);
+    }})
+  );
+}}"""
     render_js = f"""
 const h = React.createElement;
 const {{ ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar,
          Tooltip, Legend }} = Recharts;
 {funciones_punto_js}
+{tooltip_js}
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
@@ -370,7 +386,7 @@ root.render(
       h(PolarGrid, {{}}),
       h(PolarAngleAxis, {{ dataKey: 'categoria', tick: {{ fontSize: 10, fill: '#54616f' }} }}),
       h(PolarRadiusAxis, {{ {eje_radio_kw} tick: false, axisLine: false }}),
-      h(Tooltip, {{ formatter: (value, name, props) => [props.payload[name + '_etq'], name] }}),
+      h(Tooltip, {{ content: h(TooltipRadar) }}),
       h(Legend, {{}}),
       {elementos_radar_js}
     )
@@ -378,7 +394,6 @@ root.render(
 );
 """
     recharts_component(render_js, data, height=height)
-    return negativos
 
 _treemap_click_component = components.declare_component(
     "treemap_click", path=str(BASE / "components" / "treemap_click"))
@@ -947,17 +962,11 @@ if pagina == "Utilidad Operativa":
                 "Utilidad Operativa": [float(uo_ad.loc[a, "utilidad"]) for a in aduanas_radar],
             })
             st.caption("Top 10 aduanas por volumen combinado (emitida + recibida). Escala logarítmica. "
-                       "Utilidad Operativa negativa o cero se dibuja pegada al centro (el valor real "
-                       "se ve en el tooltip).")
-            negativos_radar = radar_recharts(
-                df_radar_uo, "aduana", {"Emitidas": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
-                height=480, escala_log=True, serie_resaltar_negativo="Utilidad Operativa")
-            if negativos_radar:
-                lista_neg = " &nbsp;·&nbsp; ".join(f"<b>{a}</b> {et}" for a, et in negativos_radar)
-                st.markdown(
-                    f'<p style="color:{C_NEG}; font-size:0.85rem; margin-top:-8px;">'
-                    f'Pérdida Operativa: {lista_neg}</p>',
-                    unsafe_allow_html=True)
+                       "Utilidad Operativa negativa se marca en rojo (punto y tooltip).")
+            radar_recharts(df_radar_uo, "aduana",
+                          {"Emitidas": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
+                          height=480, escala_log=True,
+                          serie_resaltar_negativo="Utilidad Operativa")
         with bc2:
             aduana_uo_sel = st.selectbox(
                 "Seleccionar Aduana", aduanas_uo,
