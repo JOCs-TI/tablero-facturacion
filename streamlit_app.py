@@ -796,10 +796,13 @@ if pagina == "Utilidad Operativa":
             df_radar_uo = pd.DataFrame({
                 "aduana": aduanas_radar,
                 "Emitidas": [float(em_por_ad.get(a, 0.0)) for a in aduanas_radar],
-                "Recibidas": [float(rec_por_ad.get(a, 0.0)) for a in aduanas_radar],
+                "Utilidad Operativa": [float(uo_ad.loc[a, "utilidad"]) for a in aduanas_radar],
             })
-            st.caption("Top 10 aduanas por volumen combinado (emitida + recibida). Escala logarítmica.")
-            radar_recharts(df_radar_uo, "aduana", {"Emitidas": C_EMITIDA, "Recibidas": C_RECIBIDA},
+            st.caption("Top 10 aduanas por volumen combinado (emitida + recibida). Escala logarítmica. "
+                       "Utilidad Operativa negativa o cero se dibuja pegada al centro (el valor real "
+                       "se ve en el tooltip).")
+            radar_recharts(df_radar_uo, "aduana",
+                          {"Emitidas": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
                           height=480, escala_log=True)
         with bc2:
             aduana_uo_sel = st.selectbox(
