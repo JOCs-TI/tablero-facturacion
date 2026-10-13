@@ -653,7 +653,7 @@ def load_utilidad_operativa():
     (se queda solo para detectar la fila basura/el renglon sin montos). La
     'utilidad' real se calcula mas abajo, en la pagina, una vez que se cruza
     con Emitidas por aduana."""
-    cols_monto = ["INGRESOS", "HONORARIOS AA", "SUELDOS", "GASTOS"]
+    cols_monto = ["INGRESOS", "HONORARIOS AA", "SUELDOS", "GASTOS", "CTOS DE REFERENCIA"]
     partes = []
     for anio, mes, path in descubrir_archivos():
         etiqueta = f"{MESES[mes]} {anio}" if mes else path.stem
@@ -875,7 +875,14 @@ if not utilidad_op_f.empty:
         for a, p in zip(utilidad_op_f["aduana"], utilidad_op_f["periodo_label"])
     ]
     utilidad_op_f["ingreso"] = utilidad_op_f["emitidas"] + utilidad_op_f["HONORARIOS AA"]
-    utilidad_op_f["egreso"] = utilidad_op_f["recibida"] + utilidad_op_f["SUELDOS"]
+    # 'CTOS DE REFERENCIA' (columna nueva de la hoja 'UTILIDAD OPERATIVA'): se resta
+    # igual que Sueldos -- EXCEPTO en IMILE LAREDO, donde este mismo costo ya se
+    # suma más abajo vía la pestaña dedicada 'imile laredo' (TOTAL CTO DE
+    # REFERENCIA); sumarlo aquí también lo duplicaría (confirmado con el usuario).
+    utilidad_op_f["ctos_referencia"] = utilidad_op_f["CTOS DE REFERENCIA"].where(
+        utilidad_op_f["aduana"] != "IMILE LAREDO", 0.0)
+    utilidad_op_f["egreso"] = (utilidad_op_f["recibida"] + utilidad_op_f["SUELDOS"]
+                              + utilidad_op_f["ctos_referencia"])
 
     # IMILE LAREDO factura a una empresa extranjera que no pasa por el SAT, por
     # eso no aparece en 'emitidas'/'recibidas' -- su Ingreso/Gasto real vive en
@@ -925,15 +932,16 @@ if pagina == "Utilidad Operativa":
         st.subheader("Utilidad Operativa")
         st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
                    "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
-                   "+ Sueldos (ambos de la hoja 'UTILIDAD OPERATIVA').")
-        tot = utilidad_op_f[["HONORARIOS AA", "SUELDOS", "ingreso", "egreso"]].sum()
+                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA').")
+        tot = utilidad_op_f[["HONORARIOS AA", "SUELDOS", "ctos_referencia", "ingreso", "egreso"]].sum()
         # "Ingresos"/"Recibidas" se leen de ingreso/egreso (ya con el ajuste de
         # IMILE LAREDO sumado) menos su componente que ya va en otra barra --
         # así el total de la cascada cuadra con la suma de utilidad por aduana.
         df_uo = pd.DataFrame({
-            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Recibidas"],
+            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Costos de Referencia", "Recibidas"],
             "valor": [tot["ingreso"] - tot["HONORARIOS AA"], tot["HONORARIOS AA"],
-                     -tot["SUELDOS"], -(tot["egreso"] - tot["SUELDOS"])],
+                     -tot["SUELDOS"], -tot["ctos_referencia"],
+                     -(tot["egreso"] - tot["SUELDOS"] - tot["ctos_referencia"])],
         })
         waterfall_recharts(df_uo, "label", "valor",
                           color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
@@ -942,8 +950,8 @@ if pagina == "Utilidad Operativa":
         st.divider()
         st.subheader("Utilidad Operativa por Aduana")
         uo_ad = utilidad_op_f.groupby("aduana")[["emitidas", "HONORARIOS AA", "SUELDOS",
-                                                 "recibida", "ingreso", "egreso",
-                                                 "utilidad"]].sum()
+                                                 "ctos_referencia", "recibida", "ingreso",
+                                                 "egreso", "utilidad"]].sum()
         aduanas_uo = uo_ad.sort_values("utilidad", ascending=False).index.tolist()
 
         bc1, bc2 = st.columns([1.6, 1])
@@ -984,11 +992,12 @@ if pagina == "Utilidad Operativa":
             # Montos exactos (sin redondear a $X.XM/$Xk) para poder auditarlos a detalle.
             tabla_uo = pd.DataFrame({
                 "Concepto": ["Emitidas", "Honorarios AA", "Ingresos", "Recibidas", "Sueldos",
-                            "Egresos", "Utilidad Operativa", "% Utilidad Operativa"],
+                            "Costos de Referencia", "Egresos", "Utilidad Operativa",
+                            "% Utilidad Operativa"],
                 "Valor": [fmt(emitidas_sel), fmt(float(fila["HONORARIOS AA"])),
                          fmt(ingresos_sel), fmt(float(fila["recibida"])),
-                         fmt(float(fila["SUELDOS"])), fmt(float(fila["egreso"])),
-                         fmt(float(fila["utilidad"])),
+                         fmt(float(fila["SUELDOS"])), fmt(float(fila["ctos_referencia"])),
+                         fmt(float(fila["egreso"])), fmt(float(fila["utilidad"])),
                          pct(pct_uo_sel) if pct_uo_sel is not None else "—"],
             })
             st.dataframe(tabla_uo, use_container_width=True, hide_index=True)
