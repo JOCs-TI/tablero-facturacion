@@ -2,11 +2,14 @@ import json
 import unicodedata
 from collections import namedtuple
 from io import BytesIO
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from pathlib import Path
+
+alt.data_transformers.disable_max_rows()
 
 st.set_page_config(
     page_title="Facturación Emitida y Recibida",
@@ -91,6 +94,21 @@ def coalesce_col(df, *names):
         if n in df.columns:
             return df[n]
     return pd.Series([None] * len(df), index=df.index)
+
+# ── Altair (solo para la dona de Gastos por Concepto -- ver nota mas abajo) ────
+FUENTE = "system-ui, 'Segoe UI', Roboto, sans-serif"
+
+def tema(chart):
+    """Aplica la identidad visual JOCS (tema claro) a cualquier chart de Altair."""
+    return (chart
+        .configure_view(strokeOpacity=0)
+        .configure_axis(labelColor="#54616f", titleColor=JOCS_AZUL, gridColor="#eceff2",
+                        domainColor="#d7dce1", labelFont=FUENTE, titleFont=FUENTE,
+                        titleFontWeight=600, labelFontSize=11, titleFontSize=12)
+        .configure_legend(labelColor="#54616f", titleColor=JOCS_AZUL,
+                          labelFont=FUENTE, titleFont=FUENTE)
+        .configure_title(color=JOCS_AZUL, font=FUENTE, fontWeight=600)
+    )
 
 # ── Recharts (piloto 2026-10-13, a pedido del usuario) ─────────────────────────
 # No hay paquete de Streamlit ya hecho para esto (Recharts es de React/JS); se
@@ -226,62 +244,6 @@ root.render(
 );
 """
     recharts_component(render_js, data, height=h_px)
-
-def donut_recharts(valores, height=360, colores=None, etiquetas=None,
-                   centro_titulo=None, centro_sub=None):
-    """Version Recharts de donut_chart(): PieChart con innerRadius + leyenda a la
-    derecha (nombre completo) y % dentro de cada rebanada. 'centro_titulo'/
-    'centro_sub' (opcionales): dos lineas de texto al centro del anillo (ej. monto
-    total + nombre de la aduana, como en Gastos por Concepto)."""
-    df = valores.rename("valor").reset_index()
-    df.columns = ["label", "valor"]
-    df["leyenda"] = etiquetas if etiquetas is not None else df["label"]
-    tot = df["valor"].sum() or 1.0
-    df["pct"] = df["valor"] / tot
-    if colores is None:
-        colores = [color_for(i) for i in range(len(df))]
-    data = [{"label": str(r.label), "leyenda": str(r.leyenda), "valor": float(r.valor),
-             "pct": float(r.pct), "etiqueta": fmt_m(r.valor), "color": c}
-            for r, c in zip(df.itertuples(), colores)]
-    centro_js = ""
-    if centro_titulo is not None:
-        centro_js = f"""
-      h('text', {{ x: '38%', y: '47%', textAnchor: 'middle', fontSize: 22, fontWeight: 700,
-                  fill: '{JOCS_AZUL}' }}, {json.dumps(str(centro_titulo))}),
-      h('text', {{ x: '38%', y: '54%', textAnchor: 'middle', fontSize: 14,
-                  fill: '#54616f' }}, {json.dumps(str(centro_sub or ""))}),"""
-    render_js = f"""
-const h = React.createElement;
-const {{ ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend }} = Recharts;
-
-function PctLabel(props) {{
-  const {{ cx, cy, midAngle, innerRadius, outerRadius, pct }} = props;
-  if (pct < 0.025) return null;
-  const RAD = Math.PI / 180;
-  const r = (innerRadius + outerRadius) / 2;
-  const x = cx + r * Math.cos(-midAngle * RAD);
-  const y = cy + r * Math.sin(-midAngle * RAD);
-  return h('text', {{ x, y, fill: '#fff', textAnchor: 'middle', dominantBaseline: 'central',
-                     fontSize: 12, fontWeight: 600 }}, (pct * 100).toFixed(0) + '%');
-}}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
-    h(PieChart, {{}},
-      h(Pie, {{ data: data, dataKey: 'valor', nameKey: 'leyenda', cx: '38%', cy: '50%',
-               innerRadius: '46%', outerRadius: '78%', paddingAngle: 1, isAnimationActive: false,
-               label: PctLabel, labelLine: false }},
-        data.map((d, i) => h(Cell, {{ key: i, fill: d.color, stroke: '#FFFFFF', strokeWidth: 2 }}))
-      ),
-      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta + ' · ' + (p.payload.pct * 100).toFixed(1) + '%', p.payload.label] }}),
-      h(Legend, {{ layout: 'vertical', align: 'right', verticalAlign: 'middle',
-                  wrapperStyle: {{ fontSize: 12, lineHeight: '20px' }} }}),{centro_js}
-    )
-  )
-);
-"""
-    recharts_component(render_js, data, height=height)
 
 def pareto_recharts(serie, color, height=420, umbral=0.8, color_neg=None):
     """Version Recharts de pareto_chart(): barras descendentes + linea de %
@@ -981,8 +943,37 @@ if pagina == "Gastos por Concepto":
     # Etiqueta de leyenda con concepto, monto exacto y %, para leer todo sin tabla.
     base_pct = dona.sum()
     etiquetas = [f"{c}  ·  {fmt(v)}  ·  {v / base_pct * 100:.1f}%" for c, v in dona.items()]
-    donut_recharts(dona, height=640, colores=colores, etiquetas=etiquetas,
-                   centro_titulo=fmt_m(tot_gasto), centro_sub=aduana_sel)
+    # Esta dona se quedo en Altair (no Recharts): la version Recharts salia mal
+    # posicionada/recortada en el despliegue (el usuario pidio regresarla).
+    df_dona = pd.DataFrame({
+        "concepto": dona.index, "valor": dona.values, "leyenda": etiquetas,
+        "pct": dona.values / base_pct if base_pct else 0.0,
+        "orden": range(len(dona)),
+    })
+    r_out, r_in = 300, 160
+    arcos = alt.Chart(df_dona).mark_arc(innerRadius=r_in, outerRadius=r_out,
+                                        stroke="#FFFFFF", strokeWidth=2).encode(
+        theta=alt.Theta("valor:Q", stack=True),
+        order=alt.Order("orden:Q"),
+        color=alt.Color("leyenda:N", sort=etiquetas,
+                        scale=alt.Scale(domain=etiquetas, range=colores),
+                        legend=alt.Legend(title=None, orient="right", labelLimit=420,
+                                          labelFontSize=13, symbolType="circle")),
+        tooltip=[alt.Tooltip("concepto:N", title=titulo_concepto),
+                 alt.Tooltip("valor:Q", title="Monto", format=",.0f"),
+                 alt.Tooltip("pct:Q", title="%", format=".1%")],
+    )
+    pct_text = alt.Chart(df_dona).mark_text(radius=(r_in + r_out) / 2, fontSize=14,
+                                             color="#FFFFFF").encode(
+        theta=alt.Theta("valor:Q", stack=True), order=alt.Order("orden:Q"),
+        text=alt.Text("pct:Q", format=".0%"),
+    )
+    centro1 = alt.Chart(pd.DataFrame({"t": [fmt_m(tot_gasto)]})).mark_text(
+        fontSize=22, fontWeight=700, color=JOCS_AZUL, dy=-8).encode(text="t:N")
+    centro2 = alt.Chart(pd.DataFrame({"t": [aduana_sel]})).mark_text(
+        fontSize=14, color="#54616f", dy=14).encode(text="t:N")
+    chart_dona = (arcos + pct_text + centro1 + centro2).properties(height=640)
+    st.altair_chart(tema(chart_dona), use_container_width=True)
 
     st.divider()
     etq_contraparte = "Clientes" if es_ingreso else "Proveedores"

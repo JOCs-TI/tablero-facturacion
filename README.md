@@ -19,19 +19,25 @@ del usuario (antes había 6: Panorama, Gastos por Concepto, Por Aduana
 /Rentabilidad, Modelo y Originación, Nómina, Detalle de Facturas — las 3
 últimas se eliminaron por decisión explícita).
 
-## Gráficas: Recharts, no Altair
+## Gráficas: Recharts, no Altair (excepto la dona de Gastos por Concepto)
 
-Las gráficas se renderizan con **Recharts** (React/JS), no con Vega-Altair —
-cambio explícito a pedido del usuario (2026-10-13), solo en este tablero (los
-otros 3 de Reportes Pao siguen en Altair). No hay paquete de Streamlit ya hecho
-para esto: se incrusta a mano con `st.components.v1.html()`, cargando
-React/ReactDOM/Recharts desde unpkg y armando el árbol con `React.createElement`
-(sin JSX, para no tener que compilar con Babel en el navegador en cada rerun).
-Helpers en `app_facturacion.py`: `recharts_component()`, `waterfall_recharts()`,
-`bar_h_recharts()`, `bar_h_signed_recharts()`, `donut_recharts()`,
-`pareto_recharts()`, `treemap_recharts()` (este último usa el componente nativo
-`Treemap` de Recharts). Cada gráfica vive en su propio iframe aislado, sin
-estado compartido con Streamlit ni entre gráficas.
+La mayoría de las gráficas se renderizan con **Recharts** (React/JS), no con
+Vega-Altair — cambio explícito a pedido del usuario (2026-10-13), solo en este
+tablero (los otros 3 de Reportes Pao siguen en Altair). No hay paquete de
+Streamlit ya hecho para esto: se incrusta a mano con `st.components.v1.html()`,
+cargando React/ReactDOM/Recharts desde unpkg y armando el árbol con
+`React.createElement` (sin JSX, para no tener que compilar con Babel en el
+navegador en cada rerun). Helpers en `app_facturacion.py`:
+`recharts_component()`, `waterfall_recharts()`, `bar_h_recharts()`,
+`radar_recharts()`, `pareto_recharts()`, `treemap_recharts()` (este último usa
+el componente nativo `Treemap` de Recharts). Cada gráfica vive en su propio
+iframe aislado, sin estado compartido con Streamlit ni entre gráficas.
+
+**La dona de "Gastos por Concepto" se quedó en Altair** (`tema()`, `alt.Chart`
+inline en la página): la versión en Recharts (`PieChart`) se veía mal
+posicionada/recortada en el despliegue — el usuario pidió regresarla tal cual
+estaba. Es la única gráfica del tablero que todavía usa Altair; por eso
+`altair` sigue en `requirements.txt` aunque el resto ya no lo necesite.
 
 ## Correr en local
 
