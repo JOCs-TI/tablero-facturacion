@@ -983,7 +983,11 @@ if pagina == "Utilidad Operativa":
                 format_func=lambda a: f"{a}  ·  {fmt_m(uo_ad.loc[a, 'utilidad'])}")
             fila = uo_ad.loc[aduana_uo_sel]
             ingresos_sel = float(fila["ingreso"])
-            pct_uo_sel = fila["utilidad"] / ingresos_sel if ingresos_sel else None
+            # % Utilidad Operativa = cuánto representa esta aduana de la Utilidad
+            # Operativa TOTAL (todas las aduanas), no el margen propio de la aduana
+            # (utilidad/ingreso) -- a pedido del usuario.
+            tot_utilidad_uo = float(uo_ad["utilidad"].sum())
+            pct_uo_sel = fila["utilidad"] / tot_utilidad_uo if tot_utilidad_uo else None
             # IMILE LAREDO no factura por el SAT (ver load_imile_laredo_extra): su
             # 'emitidas' real es $0 aunque sí tiene actividad real -- en la ficha de
             # detalle se muestra el mismo monto que 'Ingresos' en vez de $0, solo
