@@ -345,50 +345,29 @@ root.render(
 """
     recharts_component(render_js, data, height=height)
 
-def treemap_recharts(serie, height=360, colores=None, formateador=fmt_m, valores_reales=None,
-                     color_pos=None, color_neg=None):
-    """Treemap con el componente nativo de Recharts (a diferencia de Altair, que no
-    trae uno -- ahi se armo 'treemap_chart()'/'_squarify()' a mano). 'valores_reales'
-    + 'color_pos'/'color_neg': igual que en treemap_chart(), para componentes que
-    pueden ser negativos (el area de una caja no puede serlo, se usa abs() para el
-    tamaño y el signo real solo para el color/etiqueta)."""
+_treemap_click_component = components.declare_component(
+    "treemap_click", path=str(BASE / "components" / "treemap_click"))
+
+def treemap_click_recharts(serie, height=360, formateador=fmt_m, valores_reales=None,
+                           color_pos=None, color_neg=None, key=None):
+    """Treemap clicable (componente real de Streamlit, no st.components.v1.html():
+    ese es de una sola via, Python -> HTML, y no puede devolver el clic a Python.
+    Al hacer clic en una caja, Streamlit hace un rerun con el nombre de esa caja
+    disponible aqui -- así se arma el drill-down aduana -> empleado -> percepción
+    pedido en el PDF ("al picarle a una...") sin selectbox.
+    'valores_reales'/'color_pos'/'color_neg': igual que antes, para componentes
+    que pueden ser negativos (el área de una caja no puede serlo)."""
     s = serie[serie > 0]
     if s.empty:
-        return False
+        return None
     reales = valores_reales.reindex(s.index) if valores_reales is not None else s
-    if colores is not None:
-        color_list = colores
-    elif valores_reales is not None:
+    if valores_reales is not None:
         color_list = [color_pos if v >= 0 else color_neg for v in reales]
     else:
         color_list = [color_for(i) for i in range(len(s))]
     data = [{"name": str(label), "size": float(v), "etiqueta": formateador(real), "color": c}
             for label, v, real, c in zip(s.index, s.values, reales.values, color_list)]
-    render_js = f"""
-const h = React.createElement;
-const {{ ResponsiveContainer, Treemap }} = Recharts;
-
-function Nodo(props) {{
-  const {{ x, y, width, height, color, name, etiqueta }} = props;
-  const cabe = width > 90 && height > 34;
-  return h('g', {{}},
-    h('rect', {{ x, y, width, height, fill: color, stroke: '#FFFFFF', strokeWidth: 2, rx: 4 }}),
-    cabe ? h('text', {{ x: x + width / 2, y: y + height / 2 - 7, textAnchor: 'middle',
-                       fill: '#FFFFFF', fontSize: 11, fontWeight: 600 }}, name) : null,
-    (cabe && height > 50) ? h('text', {{ x: x + width / 2, y: y + height / 2 + 8, textAnchor: 'middle',
-                       fill: '#FFFFFF', fontSize: 10, opacity: 0.9 }}, etiqueta) : null
-  );
-}}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
-    h(Treemap, {{ data: data, dataKey: 'size', isAnimationActive: false, content: h(Nodo) }})
-  )
-);
-"""
-    recharts_component(render_js, data, height=height)
-    return True
+    return _treemap_click_component(data=data, height=height, key=key, default=None)
 
 # ── Descubrimiento de archivos ──────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner="Descargando datos de Google Sheets...")
@@ -1018,53 +997,90 @@ if pagina == "Nómina":
     st.caption("% del Gasto Operativo = Nómina Neta ÷ Total Recibida del periodo seleccionado.")
 
     st.divider()
-    st.subheader("Desglose por Aduana y Lista de Personal")
-    st.caption("Cada cuadro es una aduana; el tamaño es proporcional a su nómina total.")
+    st.subheader("Desglose por Aduana, Personal y Percepción")
+    st.caption("Haz clic en un cuadro para profundizar: aduana → empleados de esa aduana → "
+               "componentes de su percepción.")
+
+    if "nom_aduana" not in st.session_state:
+        st.session_state.nom_aduana = None
+    if "nom_empleado" not in st.session_state:
+        st.session_state.nom_empleado = None
+
     por_aduana_nom = sueldos_f.groupby("aduana")["total"].sum().sort_values(ascending=False)
-    treemap_recharts(por_aduana_nom, height=280)
+    # Si cambiaron los filtros globales y la aduana/empleado seleccionado ya no
+    # existe en los datos filtrados, se descarta la selección en vez de tronar.
+    if st.session_state.nom_aduana not in por_aduana_nom.index:
+        st.session_state.nom_aduana = None
+        st.session_state.nom_empleado = None
 
-    aduana_nom_sel = st.selectbox("Seleccionar Aduana", por_aduana_nom.index.tolist(),
-                                  format_func=lambda a: f"{a}  ·  {fmt_m(por_aduana_nom[a])}")
-    tabla_nom = sueldos_f[sueldos_f["aduana"] == aduana_nom_sel].copy()
-    tot_aduana_nom = tabla_nom["total"].sum()
-    tabla_nom["pct"] = tabla_nom["total"] / tot_aduana_nom if tot_aduana_nom else 0.0
-    tabla_nom = tabla_nom.sort_values("total", ascending=False)
-    st.caption(f"Total nómina {aduana_nom_sel}: {fmt_m(tot_aduana_nom)} · {len(tabla_nom)} empleado(s) "
-               "· cada cuadro es un empleado de esta aduana.")
-    por_empleado_nom = tabla_nom.groupby("nombre")["total"].sum().sort_values(ascending=False)
-    treemap_recharts(por_empleado_nom, height=380)
-    st.dataframe(pd.DataFrame({
-        "Empleado": tabla_nom["nombre"],
-        "% Conformación Aduana": tabla_nom["pct"].map(lambda v: f"{v*100:.1f}%"),
-        "Sueldo Total": tabla_nom["total"].map(fmt),
-    }), use_container_width=True, hide_index=True)
+    st.markdown("**1. Aduanas** · el tamaño de cada cuadro es su nómina total")
+    clic_aduana = treemap_click_recharts(por_aduana_nom, height=240, key="tm_aduana")
+    if clic_aduana in por_aduana_nom.index and clic_aduana != st.session_state.nom_aduana:
+        st.session_state.nom_aduana = clic_aduana
+        st.session_state.nom_empleado = None
+        st.rerun()
 
-    st.divider()
-    st.subheader("Ficha Técnica del Trabajador")
-    empleados_disp = sueldos_f.sort_values("nombre")["nombre"].unique().tolist()
-    empleado_sel = st.selectbox("Seleccionar Empleado", empleados_disp, key="emp_sel")
-    fila_emp = sueldos_f[sueldos_f["nombre"] == empleado_sel]
-    if len(fila_emp) > 1:
-        st.caption(f"{len(fila_emp)} registros para este empleado en el periodo — se suman.")
-    fila_emp_sum = fila_emp[[c for c, _ in COLS_NOMINA] + ["total"]].sum()
+    if st.session_state.nom_aduana is None:
+        st.info("Haz clic en una aduana para ver sus empleados.")
+    else:
+        aduana_nom_sel = st.session_state.nom_aduana
+        if st.button(f"← Quitar selección de aduana ({aduana_nom_sel})"):
+            st.session_state.nom_aduana = None
+            st.session_state.nom_empleado = None
+            st.rerun()
 
-    c1, c2 = st.columns(2)
-    c1.metric("Aduana", fila_emp["aduana"].iloc[0] if len(fila_emp) else "—")
-    c2.metric("Costo Total Neto", fmt_m(fila_emp_sum["total"]))
+        tabla_nom = sueldos_f[sueldos_f["aduana"] == aduana_nom_sel].copy()
+        tot_aduana_nom = tabla_nom["total"].sum()
+        tabla_nom["pct"] = tabla_nom["total"] / tot_aduana_nom if tot_aduana_nom else 0.0
+        tabla_nom = tabla_nom.sort_values("total", ascending=False)
+        st.caption(f"Total nómina {aduana_nom_sel}: {fmt_m(tot_aduana_nom)} · {len(tabla_nom)} empleado(s)")
 
-    st.caption("Cada cuadro es un componente de su percepción; el tamaño es proporcional al "
-               "monto (azul = positivo, rojo = negativo, ej. ajustes de Provisiones).")
-    serie_comp_real = pd.Series({et: fila_emp_sum[c] for c, et in COLS_NOMINA})
-    ok_tm = treemap_recharts(serie_comp_real.abs(), height=360, valores_reales=serie_comp_real,
-                             color_pos=JOCS_AZUL, color_neg=C_NEG)
-    if not ok_tm:
-        st.info("Sin componentes que mostrar.")
-    # st.caption() renderiza markdown: dos o mas "$" sueltos en el mismo texto los
-    # interpreta como un bloque de LaTeX y se come los signos de pesos. Se escapan
-    # a "\$" para que se vean literales (aqui se juntan 10 montos en una sola linea).
-    partes_txt = " + ".join(fmt_m(fila_emp_sum[c]).replace("$", "\\$") for c, _ in COLS_NOMINA)
-    total_txt = fmt_m(fila_emp_sum["total"]).replace("$", "\\$")
-    st.caption(f"{partes_txt} = {total_txt} (Costo Total Neto)")
+        por_empleado_nom = tabla_nom.groupby("nombre")["total"].sum().sort_values(ascending=False)
+        if st.session_state.nom_empleado not in por_empleado_nom.index:
+            st.session_state.nom_empleado = None
+
+        st.markdown(f"**2. Empleados de {aduana_nom_sel}** · tamaño = sueldo total")
+        clic_emp = treemap_click_recharts(por_empleado_nom, height=320, key="tm_empleado")
+        if clic_emp in por_empleado_nom.index and clic_emp != st.session_state.nom_empleado:
+            st.session_state.nom_empleado = clic_emp
+            st.rerun()
+
+        st.dataframe(pd.DataFrame({
+            "Empleado": tabla_nom["nombre"],
+            "% Conformación Aduana": tabla_nom["pct"].map(lambda v: f"{v*100:.1f}%"),
+            "Sueldo Total": tabla_nom["total"].map(fmt),
+        }), use_container_width=True, hide_index=True)
+
+        if st.session_state.nom_empleado is None:
+            st.info("Haz clic en un empleado para ver el desglose de su percepción.")
+        else:
+            empleado_sel = st.session_state.nom_empleado
+            if st.button(f"← Quitar selección de empleado ({empleado_sel})"):
+                st.session_state.nom_empleado = None
+                st.rerun()
+
+            st.divider()
+            st.subheader("Ficha Técnica del Trabajador")
+            fila_emp = sueldos_f[sueldos_f["nombre"] == empleado_sel]
+            if len(fila_emp) > 1:
+                st.caption(f"{len(fila_emp)} registros para este empleado en el periodo — se suman.")
+            fila_emp_sum = fila_emp[[c for c, _ in COLS_NOMINA] + ["total"]].sum()
+
+            c1, c2 = st.columns(2)
+            c1.metric("Aduana", fila_emp["aduana"].iloc[0] if len(fila_emp) else "—")
+            c2.metric("Costo Total Neto", fmt_m(fila_emp_sum["total"]))
+
+            st.markdown(f"**3. Percepción de {empleado_sel}** · azul = positivo, "
+                       "rojo = negativo (ej. ajustes de Provisiones)")
+            serie_comp_real = pd.Series({et: fila_emp_sum[c] for c, et in COLS_NOMINA})
+            treemap_click_recharts(serie_comp_real.abs(), height=320, valores_reales=serie_comp_real,
+                                   color_pos=JOCS_AZUL, color_neg=C_NEG, key="tm_comp")
+            # st.caption() renderiza markdown: dos o mas "$" sueltos en el mismo texto los
+            # interpreta como un bloque de LaTeX y se come los signos de pesos. Se escapan
+            # a "\$" para que se vean literales (aqui se juntan 10 montos en una sola linea).
+            partes_txt = " + ".join(fmt_m(fila_emp_sum[c]).replace("$", "\\$") for c, _ in COLS_NOMINA)
+            total_txt = fmt_m(fila_emp_sum["total"]).replace("$", "\\$")
+            st.caption(f"{partes_txt} = {total_txt} (Costo Total Neto)")
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TARJETA DE CRÉDITO

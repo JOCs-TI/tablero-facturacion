@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.15.0/umd/Recharts.js"></script>
+<style>
+  html, body { margin: 0; font-family: system-ui, 'Segoe UI', Roboto, sans-serif; overflow: hidden; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+/* Puente minimo al protocolo de Streamlit Components (postMessage), sin la
+   libreria streamlit-component-lib -- son solo 3 tipos de mensaje: avisar que
+   el componente esta listo, mandar el valor elegido (dispara un rerun de
+   Streamlit solo), y avisar el alto real del iframe. */
+const Streamlit = {
+  _send(payload) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true }, payload), "*");
+  },
+  init() {
+    window.addEventListener("message", (event) => {
+      const d = event.data;
+      if (!d || d.type !== "streamlit:render") return;
+      render((d.args) || {});
+    });
+    this._send({ type: "streamlit:componentReady", apiVersion: 1 });
+  },
+  setComponentValue(value) {
+    this._send({ type: "streamlit:setComponentValue", value: value, dataType: "json" });
+  },
+  setFrameHeight(height) {
+    this._send({ type: "streamlit:setFrameHeight", height: height });
+  },
+};
+
+function fmtMoney(v) {
+  const s = v < 0 ? '-' : '';
+  const a = Math.abs(v);
+  if (a >= 1e6) return s + '$' + (a / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return s + '$' + Math.round(a / 1e3) + 'k';
+  return s + '$' + Math.round(a).toLocaleString('en-US');
+}
+
+let mounted = false;
+
+function render(args) {
+  const data = args.data || [];
+  const height = args.height || 360;
+  const h = React.createElement;
+  const { ResponsiveContainer, Treemap } = Recharts;
+
+  function Nodo(props) {
+    const { x, y, width, height: hgt, color, name, etiqueta } = props;
+    const cabe = width > 90 && hgt > 34;
+    return h('g', {
+      onClick: () => Streamlit.setComponentValue(name),
+      style: { cursor: 'pointer' },
+    },
+      h('rect', { x, y, width, height: hgt, fill: color, stroke: '#FFFFFF', strokeWidth: 2, rx: 4 }),
+      cabe ? h('text', { x: x + width / 2, y: y + hgt / 2 - 7, textAnchor: 'middle',
+                        fill: '#FFFFFF', fontSize: 11, fontWeight: 600, pointerEvents: 'none' }, name) : null,
+      (cabe && hgt > 50) ? h('text', { x: x + width / 2, y: y + hgt / 2 + 8, textAnchor: 'middle',
+                        fill: '#FFFFFF', fontSize: 10, opacity: 0.9, pointerEvents: 'none' }, etiqueta) : null
+    );
+  }
+
+  if (!mounted) {
+    window.__root = ReactDOM.createRoot(document.getElementById('root'));
+    mounted = true;
+  }
+  window.__root.render(
+    h(ResponsiveContainer, { width: '100%', height: height - 10 },
+      h(Treemap, { data: data, dataKey: 'size', isAnimationActive: false, content: h(Nodo) })
+    )
+  );
+  Streamlit.setFrameHeight(height);
+}
+
+Streamlit.init();
+</script>
+</body>
+</html>
