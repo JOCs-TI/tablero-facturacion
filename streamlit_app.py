@@ -992,12 +992,6 @@ if pagina == "Utilidad Operativa":
                          pct(pct_uo_sel) if pct_uo_sel is not None else "—"],
             })
             st.dataframe(tabla_uo, use_container_width=True, hide_index=True)
-            if aduana_uo_sel == "IMILE LAREDO":
-                st.caption("IMILE LAREDO factura a una empresa extranjera que no pasa por el "
-                           "SAT mexicano: 'Emitidas' aquí muestra el mismo monto que 'Ingresos' "
-                           "(de su propia hoja 'imile laredo') en vez de $0 — 'Recibidas' sigue "
-                           "siendo la factura real registrada, muy por debajo de 'Egresos' por "
-                           "la misma razón.")
 
         st.divider()
         st.subheader("Pareto de Utilidad Operativa (todo CC)")
