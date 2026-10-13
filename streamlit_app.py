@@ -1,15 +1,12 @@
-import math
+import json
 import unicodedata
 from collections import namedtuple
 from io import BytesIO
-import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from pathlib import Path
-
-alt.data_transformers.disable_max_rows()
 
 st.set_page_config(
     page_title="Facturación Emitida y Recibida",
@@ -95,185 +92,54 @@ def coalesce_col(df, *names):
             return df[n]
     return pd.Series([None] * len(df), index=df.index)
 
-# ── Tema Altair (reemplaza Plotly; misma identidad visual JOCS clara) ──────────
-FUENTE = "system-ui, 'Segoe UI', Roboto, sans-serif"
+# ── Recharts (piloto 2026-10-13, a pedido del usuario) ─────────────────────────
+# No hay paquete de Streamlit ya hecho para esto (Recharts es de React/JS); se
+# incrusta a mano via st.components.v1.html() cargando React/ReactDOM/Recharts
+# desde unpkg y armando el arbol con React.createElement (NO JSX -- JSX
+# necesitaria compilar con Babel standalone en el navegador en cada rerun, mucho
+# mas pesado que algo ya compilado). Cada llamada crea su propio iframe aislado
+# (sin estado/seleccion compartido con Streamlit ni con otros charts).
+RECHARTS_CDN = """
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.15.0/umd/Recharts.js"></script>
+"""
 
-# Etiquetas de eje en dinero abreviado ($1.2M / $340k), igual que antes con "$~s" de Plotly.
-EJE_DINERO_EXPR = (
-    "datum.value == 0 ? '$0' : "
-    "(abs(datum.value) >= 1000000 ? '$' + format(datum.value/1000000, ',.1f') + 'M' : "
-    "(abs(datum.value) >= 1000 ? '$' + format(datum.value/1000, ',.0f') + 'k' : "
-    "'$' + format(datum.value, ',.0f')))"
-)
+RECHARTS_FMT_JS = """
+function fmtMoney(v) {
+  const s = v < 0 ? '-' : '';
+  const a = Math.abs(v);
+  if (a >= 1e6) return s + '$' + (a / 1e6).toFixed(1) + 'M';
+  if (a >= 1e3) return s + '$' + Math.round(a / 1e3) + 'k';
+  return s + '$' + Math.round(a).toLocaleString('en-US');
+}
+"""
 
-def eje_dinero(**kw):
-    return alt.Axis(labelExpr=EJE_DINERO_EXPR, labelFont=FUENTE, titleFont=FUENTE, **kw)
+def recharts_component(render_js, data, height=400):
+    """Incrusta un chart de Recharts. 'render_js' arma el arbol de elementos con
+    React.createElement y lo monta con ReactDOM.createRoot(...).render(...); tiene
+    disponibles 'data' (ya inyectada como JSON), 'Recharts', 'React', 'ReactDOM'
+    y 'fmtMoney' (abrevia $1.2M / $340k, igual que fmt_m() del lado Python)."""
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">{RECHARTS_CDN}
+<style>body{{margin:0;font-family:system-ui,'Segoe UI',Roboto,sans-serif;}}</style>
+</head><body>
+<div id="root"></div>
+<script>
+{RECHARTS_FMT_JS}
+const data = {json.dumps(data)};
+{render_js}
+</script>
+</body></html>"""
+    components.html(html, height=height, scrolling=False)
 
-def tema(chart):
-    """Aplica la identidad visual JOCS (tema claro) a cualquier chart de Altair."""
-    return (chart
-        .configure_view(strokeOpacity=0)
-        .configure_axis(labelColor="#54616f", titleColor=JOCS_AZUL, gridColor="#eceff2",
-                        domainColor="#d7dce1", labelFont=FUENTE, titleFont=FUENTE,
-                        titleFontWeight=600, labelFontSize=11, titleFontSize=12)
-        .configure_legend(labelColor="#54616f", titleColor=JOCS_AZUL,
-                          labelFont=FUENTE, titleFont=FUENTE)
-        .configure_title(color=JOCS_AZUL, font=FUENTE, fontWeight=600)
-    )
-
-def barra_h(serie, color, height=None, formateador=fmt_m):
-    """Barra horizontal simple + etiqueta afuera a la derecha (reemplaza el patrón
-    repetido go.Bar(orientation='h', textposition='outside') de varias vistas)."""
-    df = serie.rename("valor").reset_index()
-    df.columns = ["label", "valor"]
-    df["etiqueta"] = df["valor"].map(formateador)
-    orden = df["label"].tolist()
-    h = height or max(280, 30 * len(df) + 60)
-    maxv = float(df["valor"].max()) if len(df) else 1.0
-    barras = alt.Chart(df).mark_bar(color=color, cornerRadiusTopRight=3,
-                                    cornerRadiusBottomRight=3).encode(
-        y=alt.Y("label:N", title=None, sort=orden),
-        x=alt.X("valor:Q", title=None, axis=eje_dinero(), scale=alt.Scale(domain=[0, maxv * 1.2])),
-        tooltip=[alt.Tooltip("label:N", title=""), alt.Tooltip("etiqueta:N", title="Monto")],
-    )
-    etiq = alt.Chart(df).mark_text(align="left", dx=5, fontSize=11, color="#3d4752").encode(
-        y=alt.Y("label:N", sort=orden), x="valor:Q", text="etiqueta:N",
-    )
-    return (barras + etiq).properties(height=h)
-
-def donut_chart(valores, height=360, colores=None, mostrar_leyenda=True, etiquetas=None):
-    """Dona con % dentro de cada rebanada (reemplaza go.Pie textinfo='label+percent').
-    `valores`: Series indexada por etiqueta. `etiquetas`: texto de leyenda ya armado
-    (ej. 'CONCEPTO · $12,345 · 34.7%'), si se quiere distinto al label crudo."""
-    df = valores.rename("valor").reset_index()
-    df.columns = ["label", "valor"]
-    df["leyenda"] = etiquetas if etiquetas is not None else df["label"]
-    tot = df["valor"].sum()
-    df["pct"] = df["valor"] / tot if tot else 0.0
-    if colores is None:
-        colores = [color_for(i) for i in range(len(df))]
-    r_out, r_in = height * 0.46, height * 0.25
-    base = alt.Chart(df)
-    arcos = base.mark_arc(innerRadius=r_in, outerRadius=r_out, stroke="#FFFFFF", strokeWidth=2).encode(
-        theta=alt.Theta("valor:Q", stack=True),
-        order=alt.Order("valor:Q", sort="descending"),
-        color=alt.Color("leyenda:N", sort=df["leyenda"].tolist(),
-                        scale=alt.Scale(domain=df["leyenda"].tolist(), range=colores),
-                        legend=alt.Legend(title=None, orient="right", labelLimit=320,
-                                          symbolType="circle") if mostrar_leyenda else None),
-        tooltip=[alt.Tooltip("label:N", title="Concepto"),
-                 alt.Tooltip("valor:Q", title="Monto", format=",.0f"),
-                 alt.Tooltip("pct:Q", title="% del total", format=".1%")],
-    )
-    texto = base.mark_text(radius=(r_in + r_out) / 2, fontSize=12, fontWeight=600,
-                           color="#FFFFFF").encode(
-        theta=alt.Theta("valor:Q", stack=True),
-        order=alt.Order("valor:Q", sort="descending"),
-        text=alt.Text("pct:Q", format=".0%"),
-    )
-    return (arcos + texto).properties(height=height)
-
-def _squarify(valores, x, y, w, h):
-    """Layout de treemap 'squarified' (Bruls, Huizing, van Wijk 2000): reparte el
-    rectangulo (x,y,w,h) entre 'valores' (positivos) en cajas lo mas cuadradas
-    posible -- sin esto, un treemap con muchos elementos sale en tiras angostas
-    e ilegibles. Sin libreria externa (es el mismo algoritmo que usa 'squarify' de
-    PyPI, en ~25 lineas)."""
-    valores = [v for v in valores if v > 0]
-    if not valores:
-        return []
-    total = sum(valores)
-    escala = (w * h) / total
-    vals = [v * escala for v in valores]
-
-    def peor_aspecto(fila, lado):
-        s, mx, mn = sum(fila), max(fila), min(fila)
-        return max((lado * lado * mx) / (s * s), (s * s) / (lado * lado * mn))
-
-    rects, resto = [], vals[:]
-    cx, cy, cw, ch = x, y, w, h
-    while resto:
-        lado = min(cw, ch)
-        fila = [resto[0]]
-        while (len(resto) > len(fila)
-               and peor_aspecto(fila + [resto[len(fila)]], lado) <= peor_aspecto(fila, lado)):
-            fila.append(resto[len(fila)])
-        resto = resto[len(fila):]
-        fila_total = sum(fila)
-        # El lado fijo de la fila es el mas corto del rectangulo restante (= 'lado'
-        # de arriba): si el rectangulo es mas ancho que alto, la fila es una
-        # COLUMNA vertical (abarca todo el alto 'ch'); si es mas alto que ancho,
-        # la fila es una banda horizontal (abarca todo el ancho 'cw'). Al reves
-        # de esto, las cajas salen en tiras angostas de ancho/alto completo.
-        if cw >= ch:
-            ancho_fila = fila_total / ch if ch else 0
-            ay = cy
-            for v in fila:
-                alto = v / ancho_fila if ancho_fila else 0
-                rects.append((cx, ay, cx + ancho_fila, ay + alto))
-                ay += alto
-            cx, cw = cx + ancho_fila, cw - ancho_fila
-        else:
-            alto_fila = fila_total / cw if cw else 0
-            ax = cx
-            for v in fila:
-                ancho = v / alto_fila if alto_fila else 0
-                rects.append((ax, cy, ax + ancho, cy + alto_fila))
-                ax += ancho
-            cy, ch = cy + alto_fila, ch - alto_fila
-    return rects
-
-def treemap_chart(serie, height=360, w_layout=900.0, colores=None, formateador=fmt_m,
-                  valores_reales=None):
-    """Treemap: cada caja es proporcional al valor (layout '_squarify' de arriba).
-    'serie' indexada por etiqueta, valores positivos; una sola caja por índice
-    repetido se pierde (usar .groupby(...).sum() antes si hace falta).
-    'valores_reales' (opcional, mismo índice que 'serie'): cuando 'serie' ya viene
-    en valor absoluto porque el componente real puede ser negativo (el área de una
-    caja no puede serlo), aquí se pasa el monto con signo real para la etiqueta y
-    para colorear azul/rojo según el signo."""
-    s = serie[serie > 0].sort_values(ascending=False)
-    if s.empty:
-        return None
-    rects = _squarify(s.tolist(), 0.0, 0.0, w_layout, float(height))
-    df = pd.DataFrame(rects, columns=["x0", "y0", "x1", "y1"])
-    df["label"] = s.index.tolist()
-    df["valor"] = (valores_reales.reindex(s.index).values if valores_reales is not None else s.values)
-    df["etiqueta"] = df["valor"].map(formateador)
-    df["xc"] = (df["x0"] + df["x1"]) / 2
-    df["yc"] = (df["y0"] + df["y1"]) / 2
-    df["w"], df["h"] = df["x1"] - df["x0"], df["y1"] - df["y0"]
-    if colores is not None:
-        df["color"] = colores
-    elif valores_reales is not None:
-        df["color"] = df["valor"].map(lambda v: JOCS_AZUL if v >= 0 else C_NEG)
-    else:
-        df["color"] = [color_for(i) for i in range(len(df))]
-    df["texto"] = df.apply(
-        lambda r: f"{r['label']}" if r["w"] > 90 and r["h"] > 34 else "", axis=1)
-    df["texto_valor"] = df.apply(
-        lambda r: r["etiqueta"] if r["w"] > 90 and r["h"] > 50 else "", axis=1)
-
-    escala_xy = {"x": alt.Scale(domain=[0, w_layout]), "y": alt.Scale(domain=[height, 0])}
-    cajas = alt.Chart(df).mark_rect(stroke="#FFFFFF", strokeWidth=2, cornerRadius=4).encode(
-        x=alt.X("x0:Q", axis=None, scale=escala_xy["x"]), x2="x1:Q",
-        y=alt.Y("y0:Q", axis=None, scale=escala_xy["y"]), y2="y1:Q",
-        color=alt.Color("color:N", scale=None, legend=None),
-        tooltip=[alt.Tooltip("label:N", title=""), alt.Tooltip("etiqueta:N", title="Monto")],
-    )
-    etiq_label = alt.Chart(df).mark_text(fontSize=11, fontWeight=600, color="#FFFFFF", dy=-7).encode(
-        x=alt.X("xc:Q", scale=escala_xy["x"]), y=alt.Y("yc:Q", scale=escala_xy["y"]), text="texto:N",
-    )
-    etiq_valor = alt.Chart(df).mark_text(fontSize=10, color="#FFFFFF", dy=8, opacity=0.9).encode(
-        x=alt.X("xc:Q", scale=escala_xy["x"]), y=alt.Y("yc:Q", scale=escala_xy["y"]),
-        text="texto_valor:N",
-    )
-    return (cajas + etiq_label + etiq_valor).properties(height=height)
-
-def waterfall_chart(df_in, label_col, valor_col, color_pos, color_neg, color_total,
-                    total_label="TOTAL", height=380):
-    """Grafico de cascada (waterfall): cada barra arranca donde termino la anterior;
-    la ultima barra (total_label) es el acumulado completo, desde $0."""
+def waterfall_recharts(df_in, label_col, valor_col, color_pos, color_neg, color_total,
+                       total_label="TOTAL", height=380):
+    """Version Recharts de waterfall_chart(): misma logica de inicio/fin acumulado,
+    pero como BarChart de Recharts con barras 'flotantes' (dataKey=[low,high] +
+    'shape' a la medida para colorear) -- la tecnica que documenta Recharts para
+    graficas de cascada."""
     df = df_in[[label_col, valor_col]].copy()
     df.columns = ["label", "valor"]
     total = df["valor"].sum()
@@ -281,7 +147,7 @@ def waterfall_chart(df_in, label_col, valor_col, color_pos, color_neg, color_tot
     acumulado, inicio = 0.0, []
     for i, v in enumerate(df["valor"]):
         if i == len(df) - 1:
-            inicio.append(0.0)   # la barra total arranca siempre desde 0
+            inicio.append(0.0)
         else:
             inicio.append(acumulado)
             acumulado += v
@@ -289,21 +155,270 @@ def waterfall_chart(df_in, label_col, valor_col, color_pos, color_neg, color_tot
     df["fin"] = df["inicio"] + df["valor"]
     df["tipo"] = ["Total" if l == total_label else ("Resta" if v < 0 else "Suma")
                  for l, v in zip(df["label"], df["valor"])]
-    df["color"] = df["tipo"].map({"Suma": color_pos, "Resta": color_neg, "Total": color_total})
     df["etiqueta"] = df["valor"].map(fmt_m)
-    orden = df["label"].tolist()
 
-    barras = alt.Chart(df).mark_bar(cornerRadiusTopLeft=2, cornerRadiusTopRight=2).encode(
-        x=alt.X("label:N", title=None, sort=orden, axis=alt.Axis(labelAngle=-30)),
-        y=alt.Y("inicio:Q", title=None, axis=eje_dinero()),
-        y2="fin:Q",
-        color=alt.Color("color:N", scale=None, legend=None),
-        tooltip=[alt.Tooltip("label:N", title="Concepto"), alt.Tooltip("etiqueta:N", title="Monto")],
+    data = [
+        {"label": r.label, "range": [min(r.inicio, r.fin), max(r.inicio, r.fin)],
+         "valor": r.valor, "tipo": r.tipo, "etiqueta": r.etiqueta}
+        for r in df.itertuples()
+    ]
+    colores = json.dumps({"Suma": color_pos, "Resta": color_neg, "Total": color_total})
+
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList }} = Recharts;
+const COLORES = {colores};
+
+function CustomBar(props) {{
+  const {{ x, y, width, height, payload }} = props;
+  return h('rect', {{ x, y, width, height, fill: COLORES[payload.tipo], rx: 3, ry: 3 }});
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {height - 20} }},
+    h(BarChart, {{ data: data, margin: {{ top: 28, right: 20, left: 10, bottom: 10 }} }},
+      h(CartesianGrid, {{ strokeDasharray: '3 3', vertical: false }}),
+      h(XAxis, {{ dataKey: 'label', tick: {{ fontSize: 11, fill: '#54616f' }},
+                 axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
+                 axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta, p.payload.label] }}),
+      h(Bar, {{ dataKey: 'range', shape: CustomBar, isAnimationActive: false }},
+        h(LabelList, {{ dataKey: 'etiqueta', position: 'top', fontSize: 11, fill: '#3d4752' }})
+      )
     )
-    etiq = alt.Chart(df).mark_text(dy=-8, fontSize=10, color="#3d4752").encode(
-        x=alt.X("label:N", sort=orden), y=alt.Y("fin:Q"), text="etiqueta:N",
+  )
+);
+"""
+    recharts_component(render_js, data, height=height)
+
+def _ancho_eje_categoria(labels, min_w=90, max_w=240, por_char=6.5):
+    return int(min(max_w, max(min_w, por_char * max((len(str(l)) for l in labels), default=10))))
+
+def bar_h_recharts(serie, color, height=None, formateador=fmt_m):
+    """Version Recharts de barra_h(): barra horizontal simple + etiqueta a la derecha."""
+    df = serie.rename("valor").reset_index()
+    df.columns = ["label", "valor"]
+    df["etiqueta"] = df["valor"].map(formateador)
+    h_px = height or max(280, 30 * len(df) + 60)
+    data = [{"label": str(r.label), "valor": float(r.valor), "etiqueta": r.etiqueta}
+            for r in df.itertuples()]
+    ancho_eje = _ancho_eje_categoria(df["label"])
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList }} = Recharts;
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {h_px - 10} }},
+    h(BarChart, {{ data: data, layout: 'vertical', margin: {{ top: 10, right: 70, left: 10, bottom: 10 }} }},
+      h(CartesianGrid, {{ strokeDasharray: '3 3', horizontal: false }}),
+      h(XAxis, {{ type: 'number', tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
+                 axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ dataKey: 'label', type: 'category', width: {ancho_eje},
+                 tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta, p.payload.label] }}),
+      h(Bar, {{ dataKey: 'valor', fill: '{color}', radius: [0, 3, 3, 0], isAnimationActive: false }},
+        h(LabelList, {{ dataKey: 'etiqueta', position: 'right', fontSize: 11, fill: '#3d4752' }})
+      )
     )
-    return (barras + etiq).properties(height=height)
+  )
+);
+"""
+    recharts_component(render_js, data, height=h_px)
+
+def bar_h_signed_recharts(serie, color_pos, color_neg, height=None, formateador=fmt_m):
+    """Barra horizontal con color segun signo (azul positivo, rojo negativo) --
+    version Recharts de los paneles 'Margen'/'Utilidad Operativa por Aduana'."""
+    df = serie.rename("valor").reset_index()
+    df.columns = ["label", "valor"]
+    df = df.sort_values("valor", ascending=False)
+    df["etiqueta"] = df["valor"].map(formateador)
+    h_px = height or max(280, 30 * len(df) + 60)
+    data = [{"label": str(r.label), "valor": float(r.valor), "etiqueta": r.etiqueta,
+             "color": color_pos if r.valor >= 0 else color_neg}
+            for r in df.itertuples()]
+    ancho_eje = _ancho_eje_categoria(df["label"])
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList, Cell,
+         ReferenceLine }} = Recharts;
+
+function LabelFuera(props) {{
+  const {{ x, y, width, height, value }} = props;
+  const positivo = width >= 0;
+  return h('text', {{ x: x + width + (positivo ? 5 : -5), y: y + height / 2, dy: 4,
+                     textAnchor: positivo ? 'start' : 'end', fontSize: 11, fill: '#3d4752' }}, value);
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {h_px - 10} }},
+    h(BarChart, {{ data: data, layout: 'vertical', margin: {{ top: 10, right: 70, left: 10, bottom: 10 }} }},
+      h(CartesianGrid, {{ strokeDasharray: '3 3', horizontal: false }}),
+      h(XAxis, {{ type: 'number', tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
+                 axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ dataKey: 'label', type: 'category', width: {ancho_eje},
+                 tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta, p.payload.label] }}),
+      h(ReferenceLine, {{ x: 0, stroke: '#9aa5b1' }}),
+      h(Bar, {{ dataKey: 'valor', isAnimationActive: false, radius: [0, 3, 3, 0] }},
+        data.map((d, i) => h(Cell, {{ key: i, fill: d.color }})),
+        h(LabelList, {{ dataKey: 'etiqueta', content: LabelFuera }})
+      )
+    )
+  )
+);
+"""
+    recharts_component(render_js, data, height=h_px)
+
+def donut_recharts(valores, height=360, colores=None, etiquetas=None,
+                   centro_titulo=None, centro_sub=None):
+    """Version Recharts de donut_chart(): PieChart con innerRadius + leyenda a la
+    derecha (nombre completo) y % dentro de cada rebanada. 'centro_titulo'/
+    'centro_sub' (opcionales): dos lineas de texto al centro del anillo (ej. monto
+    total + nombre de la aduana, como en Gastos por Concepto)."""
+    df = valores.rename("valor").reset_index()
+    df.columns = ["label", "valor"]
+    df["leyenda"] = etiquetas if etiquetas is not None else df["label"]
+    tot = df["valor"].sum() or 1.0
+    df["pct"] = df["valor"] / tot
+    if colores is None:
+        colores = [color_for(i) for i in range(len(df))]
+    data = [{"label": str(r.label), "leyenda": str(r.leyenda), "valor": float(r.valor),
+             "pct": float(r.pct), "etiqueta": fmt_m(r.valor), "color": c}
+            for r, c in zip(df.itertuples(), colores)]
+    centro_js = ""
+    if centro_titulo is not None:
+        centro_js = f"""
+      h('text', {{ x: '38%', y: '47%', textAnchor: 'middle', fontSize: 22, fontWeight: 700,
+                  fill: '{JOCS_AZUL}' }}, {json.dumps(str(centro_titulo))}),
+      h('text', {{ x: '38%', y: '54%', textAnchor: 'middle', fontSize: 14,
+                  fill: '#54616f' }}, {json.dumps(str(centro_sub or ""))}),"""
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, PieChart, Pie, Cell, Tooltip, Legend }} = Recharts;
+
+function PctLabel(props) {{
+  const {{ cx, cy, midAngle, innerRadius, outerRadius, pct }} = props;
+  if (pct < 0.025) return null;
+  const RAD = Math.PI / 180;
+  const r = (innerRadius + outerRadius) / 2;
+  const x = cx + r * Math.cos(-midAngle * RAD);
+  const y = cy + r * Math.sin(-midAngle * RAD);
+  return h('text', {{ x, y, fill: '#fff', textAnchor: 'middle', dominantBaseline: 'central',
+                     fontSize: 12, fontWeight: 600 }}, (pct * 100).toFixed(0) + '%');
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
+    h(PieChart, {{}},
+      h(Pie, {{ data: data, dataKey: 'valor', nameKey: 'leyenda', cx: '38%', cy: '50%',
+               innerRadius: '46%', outerRadius: '78%', paddingAngle: 1, isAnimationActive: false,
+               label: PctLabel, labelLine: false }},
+        data.map((d, i) => h(Cell, {{ key: i, fill: d.color, stroke: '#FFFFFF', strokeWidth: 2 }}))
+      ),
+      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta + ' · ' + (p.payload.pct * 100).toFixed(1) + '%', p.payload.label] }}),
+      h(Legend, {{ layout: 'vertical', align: 'right', verticalAlign: 'middle',
+                  wrapperStyle: {{ fontSize: 12, lineHeight: '20px' }} }}),{centro_js}
+    )
+  )
+);
+"""
+    recharts_component(render_js, data, height=height)
+
+def pareto_recharts(serie, color, height=420, umbral=0.8, color_neg=None):
+    """Version Recharts de pareto_chart(): barras descendentes + linea de %
+    acumulado (ComposedChart con dos ejes Y). 'color_neg' (opcional): si se pasa,
+    'serie' puede traer negativos -- se ordena/acumula por magnitud absoluta (ya
+    que un % acumulado no tiene sentido sobre una suma que cruza por cero) y cada
+    barra se colorea 'color' o 'color_neg' segun su signo real (ej. Utilidad
+    Operativa, que puede ser negativa por aduana)."""
+    df = serie.rename("valor").reset_index()
+    df.columns = ["label", "valor"]
+    orden_col = df["valor"].abs() if color_neg is not None else df["valor"]
+    df = df.assign(_orden=orden_col).sort_values("_orden", ascending=False).drop(columns="_orden")
+    tot = (df["valor"].abs() if color_neg is not None else df["valor"]).sum() or 1.0
+    df["acumulado"] = (df["valor"].abs() if color_neg is not None else df["valor"]).cumsum() / tot
+    df["etiqueta"] = df["valor"].map(fmt_m)
+    df["color"] = color if color_neg is None else df["valor"].map(lambda v: color if v >= 0 else color_neg)
+    data = [{"label": str(r.label), "valor": float(r.valor), "etiqueta": r.etiqueta,
+             "acumulado": float(r.acumulado), "color": r.color} for r in df.itertuples()]
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+         LabelList, ReferenceLine, Cell }} = Recharts;
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
+    h(ComposedChart, {{ data: data, margin: {{ top: 28, right: 40, left: 10, bottom: 50 }} }},
+      h(CartesianGrid, {{ strokeDasharray: '3 3', vertical: false }}),
+      h(XAxis, {{ dataKey: 'label', angle: -30, textAnchor: 'end', interval: 0,
+                 tick: {{ fontSize: 10, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ yAxisId: 'izq', tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
+                 axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ yAxisId: 'der', orientation: 'right', domain: [0, 1.05],
+                 tickFormatter: v => Math.round(v * 100) + '%',
+                 tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(Tooltip, {{}}),
+      h(ReferenceLine, {{ yAxisId: 'der', y: {umbral}, stroke: '{C_NEG}', strokeDasharray: '4 3' }}),
+      h(Bar, {{ yAxisId: 'izq', dataKey: 'valor', radius: [3, 3, 0, 0], isAnimationActive: false }},
+        data.map((d, i) => h(Cell, {{ key: i, fill: d.color }})),
+        h(LabelList, {{ dataKey: 'etiqueta', position: 'top', fontSize: 10, fill: '#3d4752' }})
+      ),
+      h(Line, {{ yAxisId: 'der', type: 'monotone', dataKey: 'acumulado', stroke: '{C_MARGEN}',
+                strokeWidth: 2.5, dot: {{ r: 4, fill: '{C_MARGEN}' }}, isAnimationActive: false }})
+    )
+  )
+);
+"""
+    recharts_component(render_js, data, height=height)
+
+def treemap_recharts(serie, height=360, colores=None, formateador=fmt_m, valores_reales=None,
+                     color_pos=None, color_neg=None):
+    """Treemap con el componente nativo de Recharts (a diferencia de Altair, que no
+    trae uno -- ahi se armo 'treemap_chart()'/'_squarify()' a mano). 'valores_reales'
+    + 'color_pos'/'color_neg': igual que en treemap_chart(), para componentes que
+    pueden ser negativos (el area de una caja no puede serlo, se usa abs() para el
+    tamaño y el signo real solo para el color/etiqueta)."""
+    s = serie[serie > 0]
+    if s.empty:
+        return False
+    reales = valores_reales.reindex(s.index) if valores_reales is not None else s
+    if colores is not None:
+        color_list = colores
+    elif valores_reales is not None:
+        color_list = [color_pos if v >= 0 else color_neg for v in reales]
+    else:
+        color_list = [color_for(i) for i in range(len(s))]
+    data = [{"name": str(label), "size": float(v), "etiqueta": formateador(real), "color": c}
+            for label, v, real, c in zip(s.index, s.values, reales.values, color_list)]
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, Treemap }} = Recharts;
+
+function Nodo(props) {{
+  const {{ x, y, width, height, color, name, etiqueta }} = props;
+  const cabe = width > 90 && height > 34;
+  return h('g', {{}},
+    h('rect', {{ x, y, width, height, fill: color, stroke: '#FFFFFF', strokeWidth: 2, rx: 4 }}),
+    cabe ? h('text', {{ x: x + width / 2, y: y + height / 2 - 7, textAnchor: 'middle',
+                       fill: '#FFFFFF', fontSize: 11, fontWeight: 600 }}, name) : null,
+    (cabe && height > 50) ? h('text', {{ x: x + width / 2, y: y + height / 2 + 8, textAnchor: 'middle',
+                       fill: '#FFFFFF', fontSize: 10, opacity: 0.9 }}, etiqueta) : null
+  );
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
+    h(Treemap, {{ data: data, dataKey: 'size', isAnimationActive: false, content: h(Nodo) }})
+  )
+);
+"""
+    recharts_component(render_js, data, height=height)
+    return True
 
 # ── Descubrimiento de archivos ──────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner="Descargando datos de Google Sheets...")
@@ -708,10 +823,9 @@ if pagina == "Utilidad Operativa":
             "label": ["Ingresos", "Honorarios AA", "Sueldos", "Gastos"],
             "valor": [tot["INGRESOS"], tot["HONORARIOS AA"], -tot["SUELDOS"], -tot["GASTOS"]],
         })
-        cascada_uo = waterfall_chart(df_uo, "label", "valor",
-                                     color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
-                                     total_label="Utilidad Operativa", height=400)
-        st.altair_chart(tema(cascada_uo), use_container_width=True)
+        waterfall_recharts(df_uo, "label", "valor",
+                          color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
+                          total_label="Utilidad Operativa", height=400)
 
         st.divider()
         st.subheader("Utilidad Operativa por Aduana")
@@ -723,25 +837,8 @@ if pagina == "Utilidad Operativa":
 
         bc1, bc2 = st.columns([1.6, 1])
         with bc1:
-            uo_bar = uo_ad.reset_index()
-            uo_bar["color"] = uo_bar["utilidad"].map(lambda v: JOCS_AZUL if v >= 0 else C_NEG)
-            uo_bar["etiqueta"] = uo_bar["utilidad"].map(fmt_m)
-            mn_uo, mx_uo = float(uo_bar["utilidad"].min()), float(uo_bar["utilidad"].max())
-            alto_uo = max(340, 30 * len(uo_bar) + 60)
-            barras_uo = alt.Chart(uo_bar).mark_bar(cornerRadiusTopRight=3, cornerRadiusBottomRight=3).encode(
-                y=alt.Y("aduana:N", sort=aduanas_uo, title=None),
-                x=alt.X("utilidad:Q", title=None, axis=eje_dinero(),
-                        scale=alt.Scale(domain=[min(0, mn_uo * 1.3), max(0, mx_uo * 1.25)])),
-                color=alt.Color("color:N", scale=None, legend=None),
-                tooltip=[alt.Tooltip("aduana:N", title="Aduana"),
-                         alt.Tooltip("etiqueta:N", title="Utilidad Operativa")],
-            )
-            etiq_uo_bar = alt.Chart(uo_bar).mark_text(align="left", dx=5, fontSize=11,
-                                                       color="#3d4752").encode(
-                y=alt.Y("aduana:N", sort=aduanas_uo), x="utilidad:Q", text="etiqueta:N",
-            )
-            st.altair_chart(tema((barras_uo + etiq_uo_bar).properties(height=alto_uo)),
-                            use_container_width=True)
+            alto_uo = max(340, 30 * len(uo_ad) + 60)
+            bar_h_signed_recharts(uo_ad["utilidad"], JOCS_AZUL, C_NEG, height=alto_uo)
         with bc2:
             aduana_uo_sel = st.selectbox(
                 "Seleccionar Aduana", aduanas_uo,
@@ -765,47 +862,7 @@ if pagina == "Utilidad Operativa":
         st.subheader("Pareto de Utilidad Operativa (todo CC)")
         st.caption("Ordenado por magnitud (positiva o negativa). Azul = utilidad positiva, "
                    "rojo = negativa. Línea ámbar: % acumulado del total en valor absoluto.")
-        up = uo_ad[["utilidad"]].copy()
-        up["abs"] = up["utilidad"].abs()
-        up = up.sort_values("abs", ascending=False)
-        tot_abs = up["abs"].sum() or 1.0
-        up["acumulado"] = up["abs"].cumsum() / tot_abs
-        up["color"] = up["utilidad"].map(lambda v: JOCS_AZUL if v >= 0 else C_NEG)
-        up["etiqueta"] = up["utilidad"].map(fmt_m)
-        up["acum_txt"] = (up["acumulado"] * 100).map(lambda v: f"{v:.0f}%")
-        up = up.reset_index()
-        orden_up = up["aduana"].tolist()
-        barras_up = alt.Chart(up).mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
-            x=alt.X("aduana:N", title=None, sort=orden_up, axis=alt.Axis(labelAngle=-30)),
-            y=alt.Y("utilidad:Q", title=None, axis=eje_dinero()),
-            color=alt.Color("color:N", scale=None, legend=None),
-            tooltip=[alt.Tooltip("aduana:N", title="Aduana"),
-                     alt.Tooltip("etiqueta:N", title="Utilidad Operativa"),
-                     alt.Tooltip("acum_txt:N", title="Acumulado (magnitud)")],
-        )
-        etiq_up = alt.Chart(up).mark_text(dy=-10, fontSize=10, color="#3d4752").encode(
-            x=alt.X("aduana:N", sort=orden_up), y="utilidad:Q", text="etiqueta:N",
-        )
-        linea_up = alt.Chart(up).mark_line(
-            color=C_MARGEN, strokeWidth=2.5,
-            point=alt.OverlayMarkDef(filled=True, size=55, color=C_MARGEN)).encode(
-            x=alt.X("aduana:N", sort=orden_up),
-            y=alt.Y("acumulado:Q", title=None, axis=alt.Axis(format=".0%", orient="right"),
-                    scale=alt.Scale(domain=[0, 1.05])),
-        )
-        etiq_acum_up = alt.Chart(up).mark_text(dy=-10, fontSize=10, fontWeight=600,
-                                               color=C_MARGEN).encode(
-            x=alt.X("aduana:N", sort=orden_up),
-            y=alt.Y("acumulado:Q", scale=alt.Scale(domain=[0, 1.05])), text="acum_txt:N",
-        )
-        linea_umbral_up = alt.Chart(pd.DataFrame({"y": [0.8]})).mark_rule(
-            color=C_NEG, strokeDash=[4, 3], strokeWidth=1.5).encode(
-            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, 1.05])),
-        )
-        barras_layer_up = alt.layer(barras_up, etiq_up).properties(height=420)
-        linea_layer_up = alt.layer(linea_umbral_up, linea_up, etiq_acum_up).properties(height=420)
-        st.altair_chart(tema(alt.layer(barras_layer_up, linea_layer_up).resolve_scale(y="independent")),
-                        use_container_width=True)
+        pareto_recharts(uo_ad["utilidad"], JOCS_AZUL, color_neg=C_NEG, height=420)
 
     st.divider()
     st.subheader("Costos de Originación")
@@ -816,8 +873,7 @@ if pagina == "Utilidad Operativa":
         st.metric("Total", fmt_m(tot_josefa))
         if not josefa_f.empty:
             por_ad_j = josefa_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
-            st.altair_chart(tema(barra_h(por_ad_j, JOCS_AZUL, height=max(260, 30 * len(por_ad_j)))),
-                            use_container_width=True)
+            bar_h_recharts(por_ad_j, JOCS_AZUL, height=max(260, 30 * len(por_ad_j)))
         else:
             st.info("Sin datos.")
     with col_der:
@@ -826,8 +882,7 @@ if pagina == "Utilidad Operativa":
         st.metric("Total", fmt_m(tot_cr))
         if not costos_ref_f.empty:
             por_ad_cr = costos_ref_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
-            st.altair_chart(tema(barra_h(por_ad_cr, JOCS_VERDE, height=max(260, 30 * len(por_ad_cr)))),
-                            use_container_width=True)
+            bar_h_recharts(por_ad_cr, JOCS_VERDE, height=max(260, 30 * len(por_ad_cr)))
         else:
             st.info("Sin datos.")
 
@@ -905,35 +960,8 @@ if pagina == "Gastos por Concepto":
     # Etiqueta de leyenda con concepto, monto exacto y %, para leer todo sin tabla.
     base_pct = dona.sum()
     etiquetas = [f"{c}  ·  {fmt(v)}  ·  {v / base_pct * 100:.1f}%" for c, v in dona.items()]
-    df_dona = pd.DataFrame({
-        "concepto": dona.index, "valor": dona.values, "leyenda": etiquetas,
-        "pct": dona.values / base_pct if base_pct else 0.0,
-        "orden": range(len(dona)),
-    })
-    r_out, r_in = 300, 160
-    arcos = alt.Chart(df_dona).mark_arc(innerRadius=r_in, outerRadius=r_out,
-                                        stroke="#FFFFFF", strokeWidth=2).encode(
-        theta=alt.Theta("valor:Q", stack=True),
-        order=alt.Order("orden:Q"),
-        color=alt.Color("leyenda:N", sort=etiquetas,
-                        scale=alt.Scale(domain=etiquetas, range=colores),
-                        legend=alt.Legend(title=None, orient="right", labelLimit=420,
-                                          labelFontSize=13, symbolType="circle")),
-        tooltip=[alt.Tooltip("concepto:N", title=titulo_concepto),
-                 alt.Tooltip("valor:Q", title="Monto", format=",.0f"),
-                 alt.Tooltip("pct:Q", title="%", format=".1%")],
-    )
-    pct_text = alt.Chart(df_dona).mark_text(radius=(r_in + r_out) / 2, fontSize=14,
-                                             color="#FFFFFF").encode(
-        theta=alt.Theta("valor:Q", stack=True), order=alt.Order("orden:Q"),
-        text=alt.Text("pct:Q", format=".0%"),
-    )
-    centro1 = alt.Chart(pd.DataFrame({"t": [fmt_m(tot_gasto)]})).mark_text(
-        fontSize=22, fontWeight=700, color=JOCS_AZUL, dy=-8).encode(text="t:N")
-    centro2 = alt.Chart(pd.DataFrame({"t": [aduana_sel]})).mark_text(
-        fontSize=14, color="#54616f", dy=14).encode(text="t:N")
-    chart_dona = (arcos + pct_text + centro1 + centro2).properties(height=640)
-    st.altair_chart(tema(chart_dona), use_container_width=True)
+    donut_recharts(dona, height=640, colores=colores, etiquetas=etiquetas,
+                   centro_titulo=fmt_m(tot_gasto), centro_sub=aduana_sel)
 
     st.divider()
     etq_contraparte = "Clientes" if es_ingreso else "Proveedores"
@@ -942,8 +970,7 @@ if pagina == "Gastos por Concepto":
     prov = (r[r[campo_concepto] == concepto_sel]
             .groupby("contraparte")["importe"].sum().nlargest(15).sort_values(ascending=False))
     if len(prov):
-        st.altair_chart(tema(barra_h(prov, color_base, height=max(280, 30 * len(prov)))),
-                        use_container_width=True)
+        bar_h_recharts(prov, color_base, height=max(280, 30 * len(prov)))
     else:
         demostrativo = "esta" if articulo_concepto == "una" else "este"
         st.info(f"Sin {etq_contraparte.lower()} identificados para {demostrativo} {titulo_concepto.lower()}.")
@@ -982,9 +1009,7 @@ if pagina == "Nómina":
     st.subheader("Desglose por Aduana y Lista de Personal")
     st.caption("Cada cuadro es una aduana; el tamaño es proporcional a su nómina total.")
     por_aduana_nom = sueldos_f.groupby("aduana")["total"].sum().sort_values(ascending=False)
-    tm_aduana = treemap_chart(por_aduana_nom, height=280)
-    if tm_aduana is not None:
-        st.altair_chart(tema(tm_aduana), use_container_width=True)
+    treemap_recharts(por_aduana_nom, height=280)
 
     aduana_nom_sel = st.selectbox("Seleccionar Aduana", por_aduana_nom.index.tolist(),
                                   format_func=lambda a: f"{a}  ·  {fmt_m(por_aduana_nom[a])}")
@@ -995,9 +1020,7 @@ if pagina == "Nómina":
     st.caption(f"Total nómina {aduana_nom_sel}: {fmt_m(tot_aduana_nom)} · {len(tabla_nom)} empleado(s) "
                "· cada cuadro es un empleado de esta aduana.")
     por_empleado_nom = tabla_nom.groupby("nombre")["total"].sum().sort_values(ascending=False)
-    tm_empleado = treemap_chart(por_empleado_nom, height=380)
-    if tm_empleado is not None:
-        st.altair_chart(tema(tm_empleado), use_container_width=True)
+    treemap_recharts(por_empleado_nom, height=380)
     st.dataframe(pd.DataFrame({
         "Empleado": tabla_nom["nombre"],
         "% Conformación Aduana": tabla_nom["pct"].map(lambda v: f"{v*100:.1f}%"),
@@ -1020,10 +1043,9 @@ if pagina == "Nómina":
     st.caption("Cada cuadro es un componente de su percepción; el tamaño es proporcional al "
                "monto (azul = positivo, rojo = negativo, ej. ajustes de Provisiones).")
     serie_comp_real = pd.Series({et: fila_emp_sum[c] for c, et in COLS_NOMINA})
-    tm_comp = treemap_chart(serie_comp_real.abs(), height=360, valores_reales=serie_comp_real)
-    if tm_comp is not None:
-        st.altair_chart(tema(tm_comp), use_container_width=True)
-    else:
+    ok_tm = treemap_recharts(serie_comp_real.abs(), height=360, valores_reales=serie_comp_real,
+                             color_pos=JOCS_AZUL, color_neg=C_NEG)
+    if not ok_tm:
         st.info("Sin componentes que mostrar.")
     # st.caption() renderiza markdown: dos o mas "$" sueltos en el mismo texto los
     # interpreta como un bloque de LaTeX y se come los signos de pesos. Se escapan

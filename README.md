@@ -9,12 +9,29 @@ y Simulación Visual.docx`.
 
 | Página | Qué muestra |
 |---|---|
-| Panorama | KPIs, emitida/recibida por mes, centros de costo, detalle dinámico de conceptos, Pareto 80/20 de aduanas |
+| Utilidad Operativa | Cascada Ingresos→Honorarios AA→Sueldos→Gastos→Utilidad Operativa, barras + ficha de detalle por aduana, Pareto de Utilidad Operativa (todo CC), Costos de Originación (Honorarios Josefa + Costos de Referencia) |
 | Gastos por Concepto | Dona de gasto (o ingreso) por concepto, una aduana a la vez, con drilldown de proveedores/clientes |
-| Por Aduana (Rentabilidad) | Matriz de 4 cuadrantes, comparativo emitida/recibida y margen por aduana, detalle por centro de costo |
-| Modelo y Originación | Corresponsalías vs. asesoría aduanal, honorarios de Josefa, costos de referencia |
-| Nómina | Nómina real por empleado (nombre y sueldo), con cascada de costo por trabajador |
-| Detalle de Facturas | Buscador línea por línea, emitidas y recibidas |
+| Nómina | Treemap de 3 niveles con drill-down: aduanas → empleados de la aduana → componentes de su percepción |
+| Tarjeta de Crédito | Pendiente de datos — necesita hojas de movimientos AMEX (Alejandro y Josefa) que aún no están en el Sheets |
+
+Reestructurado a estas 4 pestañas el 2026-10-13 siguiendo un PDF de referencia
+del usuario (antes había 6: Panorama, Gastos por Concepto, Por Aduana
+/Rentabilidad, Modelo y Originación, Nómina, Detalle de Facturas — las 3
+últimas se eliminaron por decisión explícita).
+
+## Gráficas: Recharts, no Altair
+
+Las gráficas se renderizan con **Recharts** (React/JS), no con Vega-Altair —
+cambio explícito a pedido del usuario (2026-10-13), solo en este tablero (los
+otros 3 de Reportes Pao siguen en Altair). No hay paquete de Streamlit ya hecho
+para esto: se incrusta a mano con `st.components.v1.html()`, cargando
+React/ReactDOM/Recharts desde unpkg y armando el árbol con `React.createElement`
+(sin JSX, para no tener que compilar con Babel en el navegador en cada rerun).
+Helpers en `app_facturacion.py`: `recharts_component()`, `waterfall_recharts()`,
+`bar_h_recharts()`, `bar_h_signed_recharts()`, `donut_recharts()`,
+`pareto_recharts()`, `treemap_recharts()` (este último usa el componente nativo
+`Treemap` de Recharts). Cada gráfica vive en su propio iframe aislado, sin
+estado compartido con Streamlit ni entre gráficas.
 
 ## Correr en local
 
@@ -25,8 +42,8 @@ streamlit run streamlit_app.py
 
 ## Datos
 
-**Desde 2026-10-12, en vivo desde Google Sheets** (antes: Excel local commiteado
-en `EXCEL/`). El tablero descarga el libro completo cada 5 minutos
+**En vivo desde Google Sheets** (desde 2026-10-12; antes: Excel local
+commiteado en `EXCEL/`). El tablero descarga el libro completo cada 5 minutos
 (`_descargar_libro_sheets()`, `st.cache_data(ttl=300)`) desde:
 
 ```
@@ -40,20 +57,21 @@ servicio de Google Cloud, pero la organización `jocs.com.mx` bloquea la
 creación de llaves de cuentas de servicio por política; de ahí el cambio a
 link público de solo lectura.
 
-Solo se usan 6 de las pestañas del libro: `emitidas`, `recibidas`, `sueldos`,
-`corresponsalias`, `honorarios josefa`, `costos de referencia`. El resto
-(`UTILIDAD OPERATIVA`, `reglas`, `CC`, `Aduanas`, `imile laredo`) no se usa
-todavía.
+Se usan 7 de las pestañas del libro: `emitidas`, `recibidas`, `sueldos`,
+`honorarios josefa`, `costos de referencia`, `UTILIDAD OPERATIVA`. El resto
+(`corresponsalias` -- ya no se usa tras el rediseño a 4 pestañas --, `reglas`,
+`CC`, `Aduanas`, `imile laredo`) no se usa todavía.
 
 Cosas que hay que saber:
 
 1. **El monto oficial es `MONTO`/`monto 1`, no `Importe`.** Hay líneas con
    importe pero sin monto (sobre todo IMSS/Infonavit/honorarios en STAFF) que
    el usuario deja fuera del cierre a propósito — no se suman a las cifras.
-2. **"Ingreso Asesoría" en Modelo y Originación es una suposición**: el
-   documento de requerimientos no deja claro qué hoja la alimenta. Se usa
-   `costos de referencia`; con `honorarios josefa` el margen salía muy
-   negativo e implausible. Ver el aviso en la propia página.
+2. **Utilidad Operativa = Ingresos + Honorarios AA − Sueldos − Gastos**
+   (confirmado con el usuario; Honorarios AA es ingreso adicional, no costo).
+   El Pareto de esta página ordena por **magnitud absoluta** (no por el valor
+   con signo) ya que la utilidad puede ser negativa por aduana — un % acumulado
+   no tiene sentido sobre una suma que cruza por cero.
 3. **La cascada de nómina incluye "Excedente"**, que no aparece en la maqueta
    del documento pero sí es parte real del total (`TOTAL2`).
 4. **"Cuotas Patronales" en Nómina está pendiente de revisión** (aviso visible
