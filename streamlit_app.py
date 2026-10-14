@@ -1583,15 +1583,6 @@ if pagina == "Gastos por Concepto":
 if pagina == "Nómina":
     st.title("Nómina (Capital Humano)")
     st.caption(f"{', '.join(sel_labels)} · Nómina real por empleado (hoja 'sueldos')")
-    st.warning(
-        "**Cuotas Patronales en revisión**: tras conectar esta pestaña a Google Sheets "
-        "(2026-10-12) se detectó que la columna 'Cuotas Patronales' llega sistemáticamente "
-        "más baja que en el Excel original (la proporción varía por empleado, así que no es "
-        "un ajuste fijo que se pueda corregir aquí) — probablemente una fórmula que no se "
-        "recalculó igual al pasar el archivo a Sheets. El resto de los componentes de la "
-        "nómina sí coincide exacto. Esta cifra (y por lo tanto el Total Nómina) puede estar "
-        "subestimada hasta que se revise la fórmula de esa columna en el Sheets."
-    )
 
     if sueldos_f.empty:
         st.info("Sin datos de nómina para el periodo y aduana seleccionados.")
