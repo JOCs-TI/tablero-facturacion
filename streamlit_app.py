@@ -158,7 +158,11 @@ def gauge_svg(frac, height=200, bandas=None, etiqueta="del gasto facturado"):
     (alto); por default rojo 0-50%, ámbar 50-80%, verde 80-100%."""
     frac = max(0.0, min(1.0, frac))
     bandas = bandas or [(0.50, C_NEG), (0.30, "#e8a93c"), (0.20, JOCS_VERDE)]
-    cx, cy, r_out, r_in = 120, 120, 105, 68
+    # cx/cy/r_out se corrieron un poco mas chicos que antes (eran 120/120/105)
+    # para dejarle hueco a las marcas de 10% en 10% que ahora se dibujan por
+    # fuera del arco (r_out+2 a r_out+9, mas su etiqueta en r_out+20) sin que
+    # se salgan del viewBox a los lados.
+    cx, cy, r_out, r_in = 130, 122, 92, 60
 
     def punto(r, ang_deg):
         rad = math.radians(ang_deg)
@@ -179,17 +183,30 @@ def gauge_svg(frac, height=200, bandas=None, etiqueta="del gasto facturado"):
         piezas.append(f'<path d="{arco(a, a2)}" fill="{color}" />')
         a = a2
 
+    # Marcas de 10% en 10% (0 a 100) alrededor del arco, a pedido del usuario.
+    for p in range(0, 101, 10):
+        ang = 180.0 - (p / 100.0) * 180.0
+        x1, y1 = punto(r_out + 2, ang)
+        x2, y2 = punto(r_out + 8, ang)
+        xt, yt = punto(r_out + 19, ang)
+        piezas.append(f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+                      f'stroke="#8a95a1" stroke-width="1.5" />')
+        piezas.append(f'<text x="{xt:.2f}" y="{yt:.2f}" text-anchor="middle" font-size="9" '
+                      f'fill="#8a95a1">{p}%</text>')
+
     ang_aguja = 180.0 - frac * 180.0
     xa, ya = punto(r_in - 6, ang_aguja)
     fuente = "system-ui,'Segoe UI',Roboto,sans-serif"
-    # viewBox alto 185 (no 150): el texto va en cy+34/cy+52 = 154/172, por debajo
-    # de donde terminan los arcos (cy=120) -- con un viewBox mas bajo que eso el
-    # texto queda recortado fuera del area visible. Ancho/alto del <svg> FIJOS
-    # (no '100%'): si se deja responsivo al ancho de la columna, el alto
-    # renderizado (que sigue el aspect ratio del viewBox) deja de coincidir con
-    # el 'height' fijo en pixeles del iframe de components.html, y el iframe
-    # recorta lo que sobra -- con tamaño fijo ambos quedan sincronizados siempre.
-    svg = f"""<svg viewBox="0 0 240 185" width="260" height="200"
+    # viewBox alto 195 (no 150): el texto va en cy+34/cy+52 = 156/174, por debajo
+    # de donde terminan los arcos (cy=122) -- con un viewBox mas bajo que eso el
+    # texto queda recortado fuera del area visible. Ancho 260 (cx=130) para que
+    # las etiquetas de 10% (hasta r_out+19=111 desde el centro) no se salgan a
+    # los lados. Ancho/alto del <svg> FIJOS (no '100%'): si se deja responsivo
+    # al ancho de la columna, el alto renderizado (que sigue el aspect ratio
+    # del viewBox) deja de coincidir con el 'height' fijo en pixeles del
+    # iframe de components.html, y el iframe recorta lo que sobra -- con
+    # tamaño fijo ambos quedan sincronizados siempre.
+    svg = f"""<svg viewBox="0 0 260 195" width="280" height="210"
                    xmlns="http://www.w3.org/2000/svg" style="display:block;margin:0 auto;">
       {"".join(piezas)}
       <line x1="{cx}" y1="{cy}" x2="{xa:.2f}" y2="{ya:.2f}" stroke="{JOCS_AZUL}"
@@ -1071,7 +1088,13 @@ def load_amex(persona):
         df.columns = [str(c).strip() for c in df.columns]
         out = pd.DataFrame(index=df.index)
         out["proveedor"] = coalesce_col(df, "Supplier Name").map(norm_txt).fillna("SIN PROVEEDOR")
-        out["monto"] = pd.to_numeric(coalesce_col(df, "Net Billed Amount"), errors="coerce").fillna(0.0)
+        # 'Net Billed Amount' viene vacío cuando Charge Amount == Credit Amount
+        # (cargo abonado completo, ej. TELMEX CARGO RECURRENTE $12 cargo + $12
+        # credito) -- a pedido del usuario, ahí se usa el Charge Amount
+        # original en vez de mostrar $0.
+        monto_neto = pd.to_numeric(coalesce_col(df, "Net Billed Amount"), errors="coerce")
+        monto_cargo = pd.to_numeric(coalesce_col(df, "Charge Amount"), errors="coerce").fillna(0.0)
+        out["monto"] = monto_neto.fillna(monto_cargo)
         out["uuids"] = coalesce_col(df, col_uuid).map(_extraer_uuids)
         out["facturado"] = out["uuids"].map(len) > 0
         out["anio"], out["mes"], out["periodo_label"] = anio, mes, etiqueta
