@@ -1627,7 +1627,6 @@ if pagina == "Tarjeta de Crédito":
     st.caption("'Facturado' = el movimiento ya trae un UUID de factura conciliado en el Sheets "
                "(no se cruza contra 'emitidas'/'recibidas' -- esas hojas ya no traen columna UUID).")
 
-    TOP_PROV = 8
     for nombre, amex_df in [("Alejandro", amex_alejandro_df), ("Josefa", amex_josefa_df)]:
         amex_f = amex_df[amex_df["periodo_label"].isin(sel_labels)] if not amex_df.empty else amex_df
         st.divider()
@@ -1646,10 +1645,13 @@ if pagina == "Tarjeta de Crédito":
 
         col_donut, col_kpi = st.columns([1.3, 1])
         with col_donut:
-            por_prov = amex_f.groupby("proveedor")["monto"].sum().sort_values(ascending=False)
-            if len(por_prov) > TOP_PROV:
-                por_prov = pd.concat([por_prov.head(TOP_PROV),
-                                      pd.Series({"Otros proveedores": por_prov.iloc[TOP_PROV:].sum()})])
+            # No se agrupan "los demas" en un cajon de Otros -- a pedido del
+            # usuario, solo se junta lo que es caseta/peaje (nombres que traen
+            # "PASE", ej. "PASE CARGO ACUMULADO PEAJE", "PASE MARQUESA TLV");
+            # el resto de proveedores se queda cada uno como su propia rebanada.
+            es_pase = amex_f["proveedor"].str.contains("PASE", case=False, na=False)
+            proveedor_agrupado = amex_f["proveedor"].where(~es_pase, "PASE")
+            por_prov = amex_f.groupby(proveedor_agrupado)["monto"].sum().sort_values(ascending=False)
             nested_donut_recharts(monto_facturado, monto_no_facturado, por_prov, height=380)
         with col_kpi:
             k1, k2 = st.columns(2)
