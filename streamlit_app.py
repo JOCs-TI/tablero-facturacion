@@ -242,36 +242,49 @@ root.render(
     recharts_component(render_js, data, height=height)
 
 def bullet_uo_recharts(df, categoria_col, total_col, segmentos, egreso_col, utilidad_col,
-                       color_total=JOCS_AZUL, height=420):
+                       color_ingreso="#27ae60", color_utilidad="#f2c94c", height=420):
     """Por cada categoría, una barra apilada desde abajo con 'segmentos' (lista de
     (etiqueta, color, columna), ej. Sueldos/Costos de Referencia/Recibidas =
-    Egresos), cuya altura TOTAL de eje llega hasta 'total_col' (ej. Ingreso) aunque
-    los segmentos coloreados no la alcancen -- el espacio vacío que queda arriba
-    (sin colorear, hasta 'total_col') ES la Utilidad Operativa; no se dibuja
-    aparte, se lee directo como el hueco en la geometría (o si los segmentos se
-    pasan del tope, como pérdida). Tooltip a la medida: 'total_col', 'egreso_col'
-    (suma de los segmentos) y 'utilidad_col'. Escala siempre lineal (no log): la
-    conversión valor→píxel de los segmentos se calcula a mano a partir de la
-    altura que Recharts ya calculó para 'total_col', y esa cuenta solo es válida
-    en escala lineal."""
+    Egresos) + un segmento final 'Utilidad Operativa' (color 'color_utilidad')
+    que rellena lo que falta para llegar a 'total_col' (ej. Ingreso) -- si los
+    segmentos de gasto ya se pasaron de 'total_col' (pérdida), ese último
+    segmento no se dibuja. Una marca horizontal 'color_ingreso' al nivel de
+    'total_col' en cada barra señala el Ingreso, se haya alcanzado o no.
+    Tooltip a la medida: 'total_col', 'egreso_col' (suma de los segmentos) y
+    'utilidad_col'.
+    Escala SIEMPRE logarítmica (17 aduanas de magnitudes muy distintas: $8k a
+    $6M -- en escala lineal casi todas quedan invisibles pegadas al eje). Los
+    valores en 0 se "pisan" a un mínimo positivo (log(0) no existe, mismo
+    patrón que radar_recharts). La conversión valor→píxel de cada segmento se
+    deriva a mano de los 2 puntos que Recharts ya calculó para el Bar de
+    'total_col' en esa fila (su 'y' y su base 'y+height') -- válida para
+    cualquier valor intermedio porque los es la MISMA escala log compartida
+    por toda la gráfica, no una propia de esa barra."""
+    valores_todos = ([float(row[total_col]) for _, row in df.iterrows()]
+                     + [float(row[egreso_col]) for _, row in df.iterrows()])
+    positivos = [v for v in valores_todos if v > 0]
+    piso = (min(positivos) / 3) if positivos else 0.01
+    techo = (max(valores_todos) if valores_todos else 1.0) * 1.15
+
     data = []
     for _, row in df.iterrows():
-        d = {"categoria": str(row[categoria_col]), "total": float(row[total_col]),
+        d = {"categoria": str(row[categoria_col]), "total": max(float(row[total_col]), piso),
              "egreso": float(row[egreso_col]), "utilidad": float(row[utilidad_col])}
         for _, _, c in segmentos:
             d[c] = float(row[c])
         data.append(d)
-    techo = max([max(d["total"], d["egreso"]) for d in data], default=1.0) * 1.15
 
     pasos_segmento = "\n".join(f"""
   {{
-    const segH = Math.max(payload[{json.dumps(col)}] * pxPerUnit, 0);
-    yCursor -= segH;
-    elementos.push(h('rect', {{ key: {json.dumps(col)}, x, y: yCursor, width,
-                              height: segH, fill: '{color}' }}));
+    cum += Math.max(payload[{json.dumps(col)}], 0);
+    const yTope = yParaValor(cum);
+    elementos.push(h('rect', {{ key: {json.dumps(col)}, x, y: yTope, width,
+                              height: Math.max(yAnterior - yTope, 0), fill: '{color}' }}));
+    yAnterior = yTope;
   }}""" for _, color, col in segmentos)
 
-    leyenda_items = [(etq, color) for etq, color, _ in segmentos]
+    leyenda_items = ([(etq, color) for etq, color, _ in segmentos]
+                     + [("Utilidad Operativa", color_utilidad), ("Ingreso", color_ingreso)])
     leyenda_js = ",".join(
         f"""h('div', {{ key: {json.dumps(nombre)}, style: {{ display: 'flex', alignItems: 'center',
                       gap: 6, fontSize: 12, color: '#3d4752' }} }},
@@ -283,14 +296,44 @@ def bullet_uo_recharts(df, categoria_col, total_col, segmentos, egreso_col, util
     render_js = f"""
 const h = React.createElement;
 const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip }} = Recharts;
+const PISO = {piso};
+const LOG_PISO = Math.log(PISO);
+// 'y'/'height' que Recharts calcula por fila para dataKey='total' no sirven
+// cuando esa fila esta pisada a PISO (Ingreso real = 0, ej. STAFF): el propio
+// 'total' de esa fila queda degenerado (denom≈0) y la escala no se puede
+// derivar DE ESA fila -- pero el eje Y es el MISMO para todas las barras, así
+// que la escala (pixeles por unidad de log) y la base (pixel de PISO) son en
+// realidad globales: se calculan una vez con la primera fila NO degenerada
+// (data viene ordenada por 'total' descendente, así que la primera fila
+// siempre sirve) y se reusan para las demás, incluida cualquier fila pisada.
+let cacheYBase = null;
+let cachePxPorLogUnit = null;
 
 function BarraBullet(props) {{
   const {{ x, y, width, height, payload }} = props;
-  const total = payload.total;
-  const pxPerUnit = total > 0 ? height / total : 0;
+  const yBaseFila = y + height;
+  const denom = Math.log(Math.max(payload.total, PISO)) - LOG_PISO;
+  if (denom >= 1e-9) {{
+    cacheYBase = yBaseFila;
+    cachePxPorLogUnit = height / denom;
+  }}
+  const yBase = cacheYBase !== null ? cacheYBase : yBaseFila;
+  const pxPorLogUnit = cachePxPorLogUnit !== null ? cachePxPorLogUnit : 0;
+  function yParaValor(v) {{
+    return yBase - (Math.log(Math.max(v, PISO)) - LOG_PISO) * pxPorLogUnit;
+  }}
   const elementos = [];
-  let yCursor = y + height;
+  let cum = 0;
+  let yAnterior = yBase;
   {pasos_segmento}
+  const ingresoReal = payload.total;
+  const yIngreso = yParaValor(ingresoReal);
+  if (ingresoReal > cum) {{
+    elementos.push(h('rect', {{ key: 'utilidad', x, y: yIngreso, width,
+                              height: Math.max(yAnterior - yIngreso, 0), fill: '{color_utilidad}' }}));
+  }}
+  elementos.push(h('line', {{ key: 'tope', x1: x, x2: x + width, y1: yIngreso, y2: yIngreso,
+                            stroke: '{color_ingreso}', strokeWidth: 2 }}));
   return h('g', {{}}, elementos);
 }}
 
@@ -298,7 +341,7 @@ function TooltipBullet(props) {{
   const {{ active, payload, label }} = props;
   if (!active || !payload || !payload.length) return null;
   const fila = payload[0].payload;
-  const colorUtilidad = fila.utilidad < 0 ? '{C_NEG}' : '{color_total}';
+  const colorUtilidad = fila.utilidad < 0 ? '{C_NEG}' : '{color_utilidad}';
   return h('div', {{ style: {{ background: '#fff', border: '1px solid #d7dce1',
                              borderRadius: 6, padding: '8px 12px', fontSize: 13 }} }},
     h('div', {{ style: {{ fontWeight: 700, marginBottom: 4, color: '{JOCS_AZUL}' }} }}, label),
@@ -319,7 +362,7 @@ root.render(
         h(CartesianGrid, {{ strokeDasharray: '3 3', vertical: false }}),
         h(XAxis, {{ dataKey: 'categoria', angle: -30, textAnchor: 'end', interval: 0,
                    tick: {{ fontSize: 10, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
-        h(YAxis, {{ domain: [0, {techo}], tickFormatter: fmtMoney,
+        h(YAxis, {{ scale: 'log', domain: [{piso}, {techo}], tickFormatter: fmtMoney,
                    tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
         h(Tooltip, {{ content: h(TooltipBullet) }}),
         h(Bar, {{ dataKey: 'total', shape: BarraBullet, isAnimationActive: false }})
@@ -971,9 +1014,9 @@ if pagina == "Utilidad Operativa":
         st.subheader("Utilidad Operativa por Aduana")
         st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
                    "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
-                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA'). Cada "
-                   "barra llega hasta el Ingreso; lo apilado (Sueldos + Costos de Referencia + "
-                   "Recibidas) son los Egresos -- el espacio vacío arriba es la Utilidad Operativa.")
+                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA'). Rojos = "
+                   "los 3 gastos apilados; amarillo = Utilidad Operativa; línea verde = Ingreso. "
+                   "Escala logarítmica para que las aduanas chicas no desaparezcan.")
         df_bullet_uo = uo_ad.reset_index().sort_values("ingreso", ascending=False)
         # El segmento "Recibidas" se calcula como resto (egreso - Sueldos - Costos de
         # Referencia), no se toma la columna 'recibida' cruda directo -- para la
@@ -985,10 +1028,10 @@ if pagina == "Utilidad Operativa":
                                            - df_bullet_uo["ctos_referencia"])
         bullet_uo_recharts(
             df_bullet_uo, "aduana", "ingreso",
-            segmentos=[("Sueldos", "#8fb09c", "SUELDOS"),
-                      ("Costos de Referencia", JOCS_VERDE, "ctos_referencia"),
-                      ("Recibidas", "#2f4a38", "recibida_visual")],
-            egreso_col="egreso", utilidad_col="utilidad", color_total=JOCS_AZUL, height=440,
+            segmentos=[("Sueldos", "#e3a39c", "SUELDOS"),
+                      ("Costos de Referencia", C_NEG, "ctos_referencia"),
+                      ("Recibidas", "#7b241c", "recibida_visual")],
+            egreso_col="egreso", utilidad_col="utilidad", height=440,
         )
 
         bc1, bc2 = st.columns([1.6, 1])
