@@ -1251,12 +1251,9 @@ if pagina == "Gastos por Concepto":
         st.info("Sin gasto recibido en el periodo seleccionado.")
         st.stop()
 
-    f1, f2 = st.columns([3, 1])
-    with f1:
-        aduana_sel = st.selectbox("Aduana", gasto_ad.index.tolist(), index=0,
-                                  format_func=lambda a: f"{a}  ·  {fmt_m(gasto_ad[a])}")
-    with f2:
-        top_n = st.selectbox("Conceptos en la dona", [8, 12, 18], index=0)
+    aduana_sel = st.selectbox("Aduana", gasto_ad.index.tolist(), index=0,
+                              format_func=lambda a: f"{a}  ·  {fmt_m(gasto_ad[a])}")
+    top_n = 8
 
     r = r_all[r_all["aduana"] == aduana_sel]
     tot_gasto = r["importe"].sum()
