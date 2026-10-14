@@ -1,4 +1,6 @@
 import json
+import math
+import re
 import unicodedata
 from collections import namedtuple
 from io import BytesIO
@@ -147,6 +149,118 @@ const data = {json.dumps(data)};
 </script>
 </body></html>"""
     components.html(html, height=height, scrolling=False)
+
+def gauge_svg(frac, height=200, bandas=None, etiqueta="del gasto facturado"):
+    """Velocímetro (gauge) semicircular con aguja -- SVG puro (sin
+    React/Recharts: la aguja es el único dato variable, no hace falta nada
+    interactivo). 'frac' en [0,1] (se clampa). 'bandas' (opcional): lista de
+    (fracción_de_ancho, color) que suman 1.0, de izquierda (bajo) a derecha
+    (alto); por default 3 tercios rojo/ámbar/verde."""
+    frac = max(0.0, min(1.0, frac))
+    bandas = bandas or [(1 / 3, C_NEG), (1 / 3, "#e8a93c"), (1 / 3, JOCS_VERDE)]
+    cx, cy, r_out, r_in = 120, 120, 105, 68
+
+    def punto(r, ang_deg):
+        rad = math.radians(ang_deg)
+        return cx + r * math.cos(rad), cy - r * math.sin(rad)
+
+    def arco(a_ini, a_fin):
+        x1o, y1o = punto(r_out, a_ini)
+        x2o, y2o = punto(r_out, a_fin)
+        x1i, y1i = punto(r_in, a_fin)
+        x2i, y2i = punto(r_in, a_ini)
+        return (f"M {x1o:.2f} {y1o:.2f} A {r_out} {r_out} 0 0 1 {x2o:.2f} {y2o:.2f} "
+                f"L {x1i:.2f} {y1i:.2f} A {r_in} {r_in} 0 0 0 {x2i:.2f} {y2i:.2f} Z")
+
+    piezas = []
+    a = 180.0
+    for proporcion, color in bandas:
+        a2 = a - proporcion * 180.0
+        piezas.append(f'<path d="{arco(a, a2)}" fill="{color}" />')
+        a = a2
+
+    ang_aguja = 180.0 - frac * 180.0
+    xa, ya = punto(r_in - 6, ang_aguja)
+    fuente = "system-ui,'Segoe UI',Roboto,sans-serif"
+    # viewBox alto 185 (no 150): el texto va en cy+34/cy+52 = 154/172, por debajo
+    # de donde terminan los arcos (cy=120) -- con un viewBox mas bajo que eso el
+    # texto queda recortado fuera del area visible. Ancho/alto del <svg> FIJOS
+    # (no '100%'): si se deja responsivo al ancho de la columna, el alto
+    # renderizado (que sigue el aspect ratio del viewBox) deja de coincidir con
+    # el 'height' fijo en pixeles del iframe de components.html, y el iframe
+    # recorta lo que sobra -- con tamaño fijo ambos quedan sincronizados siempre.
+    svg = f"""<svg viewBox="0 0 240 185" width="260" height="200"
+                   xmlns="http://www.w3.org/2000/svg" style="display:block;margin:0 auto;">
+      {"".join(piezas)}
+      <line x1="{cx}" y1="{cy}" x2="{xa:.2f}" y2="{ya:.2f}" stroke="{JOCS_AZUL}"
+            stroke-width="4" stroke-linecap="round" />
+      <circle cx="{cx}" cy="{cy}" r="7" fill="{JOCS_AZUL}" />
+      <text x="{cx}" y="{cy + 34}" text-anchor="middle" font-size="26" font-weight="700"
+            fill="{JOCS_AZUL}" font-family="{fuente}">{frac * 100:.0f}%</text>
+      <text x="{cx}" y="{cy + 52}" text-anchor="middle" font-size="12" fill="#54616f"
+            font-family="{fuente}">{etiqueta}</text>
+    </svg>"""
+    components.html(f'<div style="font-family:{fuente};">{svg}</div>', height=height)
+
+def nested_donut_recharts(monto_facturado, monto_no_facturado, por_categoria, height=380,
+                          color_fact=JOCS_AZUL, color_no_fact=C_NEG):
+    """'Two Level Pie Chart' (ver TABLERO.pdf, pestaña Tarjeta de Crédito):
+    anillo interior = Facturado vs No Facturado (2 rebanadas); anillo exterior
+    = 'por_categoria' (Series ya agrupada/ordenada, ej. gasto por proveedor).
+    Tooltip a la medida en ambos anillos; leyenda manual solo del anillo
+    interior (el exterior puede traer muchas categorías, se explora con el
+    tooltip en vez de una leyenda larga)."""
+    data_int = [{"nombre": "Facturado", "valor": float(monto_facturado), "color": color_fact},
+               {"nombre": "No Facturado", "valor": float(monto_no_facturado), "color": color_no_fact}]
+    data_ext = [{"nombre": str(k), "valor": float(v), "color": color_for(i)}
+               for i, (k, v) in enumerate(por_categoria.items())]
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, PieChart, Pie, Cell, Tooltip }} = Recharts;
+const dataInt = {json.dumps(data_int)};
+const dataExt = {json.dumps(data_ext)};
+
+function TooltipDonut(props) {{
+  const {{ active, payload }} = props;
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  return h('div', {{ style: {{ background: '#fff', border: '1px solid #d7dce1',
+                             borderRadius: 6, padding: '8px 12px', fontSize: 13 }} }},
+    h('div', {{ style: {{ fontWeight: 700, color: '{JOCS_AZUL}' }} }}, d.nombre),
+    h('div', {{}}, fmtMoney(d.valor))
+  );
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h('div', {{}},
+    h('div', {{ style: {{ display: 'flex', gap: 14, justifyContent: 'center', marginBottom: 6 }} }},
+      h('div', {{ style: {{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                         color: '#3d4752' }} }},
+        h('span', {{ style: {{ width: 10, height: 10, borderRadius: 2, background: '{color_fact}',
+                             display: 'inline-block' }} }}), 'Facturado'),
+      h('div', {{ style: {{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12,
+                         color: '#3d4752' }} }},
+        h('span', {{ style: {{ width: 10, height: 10, borderRadius: 2, background: '{color_no_fact}',
+                             display: 'inline-block' }} }}), 'No Facturado')
+    ),
+    h(ResponsiveContainer, {{ width: '100%', height: {height - 30} }},
+      h(PieChart, {{}},
+        h(Tooltip, {{ content: h(TooltipDonut) }}),
+        h(Pie, {{ data: dataInt, dataKey: 'valor', nameKey: 'nombre', cx: '50%', cy: '50%',
+                 innerRadius: 0, outerRadius: 70, isAnimationActive: false }},
+          dataInt.map((d, i) => h(Cell, {{ key: i, fill: d.color }}))
+        ),
+        h(Pie, {{ data: dataExt, dataKey: 'valor', nameKey: 'nombre', cx: '50%', cy: '50%',
+                 innerRadius: 85, outerRadius: 130, isAnimationActive: false }},
+          dataExt.map((d, i) => h(Cell, {{ key: i, fill: d.color }}))
+        )
+      )
+    )
+  )
+);
+"""
+    recharts_component(render_js, [], height=height)
 
 def _ancho_eje_categoria(labels, min_w=90, max_w=240, por_char=6.5):
     return int(min(max_w, max(min_w, por_char * max((len(str(l)) for l in labels), default=10))))
@@ -881,6 +995,43 @@ def load_imile_laredo_extra():
         })
     return pd.DataFrame(partes)
 
+UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+
+def _extraer_uuids(celda):
+    return UUID_RE.findall(celda) if isinstance(celda, str) else []
+
+# En Alejandro el UUID conciliado vive en su propia columna 'uuid'; en Josefa
+# vive mezclado con notas de texto libre (ej. "11.96 DOLARES") en 'Unnamed: 10'
+# -- se extrae con el regex de arriba (patron real de UUID), no por nombre de
+# columna, para no confundir las notas con UUIDs.
+AMEX_COL_UUID = {"ALEJANDRO": "uuid", "JOSEFA": "Unnamed: 10"}
+
+@st.cache_data(show_spinner=False)
+def load_amex(persona):
+    """Movimientos de tarjeta de credito corporativa AMEX (hojas 'AMEX ALEJANDRO'/
+    'AMEX JOSEFA'). 'facturado' = se le encontro al menos un UUID conciliado --
+    no hay con que cruzarlo contra las facturas reales (emitidas/recibidas ya
+    no traen columna UUID, ver nota en descubrir_archivos), asi que es
+    simplemente si esa columna trae uno o no."""
+    hoja_nombre = f"AMEX {persona}"
+    col_uuid = AMEX_COL_UUID[persona]
+    partes = []
+    for anio, mes, path in descubrir_archivos():
+        etiqueta = f"{MESES[mes]} {anio}" if mes else path.stem
+        hojas = {h.strip().lower(): h for h in pd.ExcelFile(path).sheet_names}
+        if hoja_nombre.lower() not in hojas:
+            continue
+        df = pd.read_excel(path, sheet_name=hojas[hoja_nombre.lower()], header=0)
+        df.columns = [str(c).strip() for c in df.columns]
+        out = pd.DataFrame(index=df.index)
+        out["proveedor"] = coalesce_col(df, "Supplier Name").map(norm_txt).fillna("SIN PROVEEDOR")
+        out["monto"] = pd.to_numeric(coalesce_col(df, "Net Billed Amount"), errors="coerce").fillna(0.0)
+        out["uuids"] = coalesce_col(df, col_uuid).map(_extraer_uuids)
+        out["facturado"] = out["uuids"].map(len) > 0
+        out["anio"], out["mes"], out["periodo_label"] = anio, mes, etiqueta
+        partes.append(out)
+    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
+
 try:
     df, periodos = load_data()
     sueldos_df = load_sueldos()
@@ -888,6 +1039,8 @@ try:
     costos_ref_df = load_costos_referencia()
     utilidad_op_df = load_utilidad_operativa()
     imile_laredo_extra_df = load_imile_laredo_extra()
+    amex_alejandro_df = load_amex("ALEJANDRO")
+    amex_josefa_df = load_amex("JOSEFA")
 except Exception as e:
     st.error(f"Error al descargar/leer los datos de Google Sheets:\n\n`{SHEET_EXPORT_URL}`\n\n{e}")
     st.stop()
@@ -1470,11 +1623,41 @@ if pagina == "Nómina":
 # ══════════════════════════════════════════════════════════════════════════════
 if pagina == "Tarjeta de Crédito":
     st.title("Tarjeta de Crédito")
-    st.info(
-        "**Pestaña pendiente de datos.** Esta vista necesita los movimientos de las tarjetas "
-        "AMEX de Alejandro y Josefa (fecha, monto, UUID de factura relacionado si existe) para "
-        "calcular: total gastado, movimientos, UUID's encontrados/no encontrados, monto "
-        "facturado/no facturado y el % del gasto ya documentado por aduana. Esas hojas todavía "
-        "no están en el Google Sheets conectado — hay que agregarlas ahí primero."
-    )
+    st.caption(f"{', '.join(sel_labels)} · Fuente: Movimientos AMEX Alejandro y Movimientos AMEX Josefa")
+    st.caption("'Facturado' = el movimiento ya trae un UUID de factura conciliado en el Sheets "
+               "(no se cruza contra 'emitidas'/'recibidas' -- esas hojas ya no traen columna UUID).")
+
+    TOP_PROV = 8
+    for nombre, amex_df in [("Alejandro", amex_alejandro_df), ("Josefa", amex_josefa_df)]:
+        amex_f = amex_df[amex_df["periodo_label"].isin(sel_labels)] if not amex_df.empty else amex_df
+        st.divider()
+        st.subheader(nombre)
+        if amex_f.empty:
+            st.info(f"Sin movimientos de {nombre} para el periodo seleccionado.")
+            continue
+
+        total_gastado = float(amex_f["monto"].sum())
+        movimientos = len(amex_f)
+        facturados = int(amex_f["facturado"].sum())
+        no_facturados = movimientos - facturados
+        monto_facturado = float(amex_f.loc[amex_f["facturado"], "monto"].sum())
+        monto_no_facturado = total_gastado - monto_facturado
+        pct_facturado = (monto_facturado / total_gastado) if total_gastado else 0.0
+
+        col_donut, col_kpi = st.columns([1.3, 1])
+        with col_donut:
+            por_prov = amex_f.groupby("proveedor")["monto"].sum().sort_values(ascending=False)
+            if len(por_prov) > TOP_PROV:
+                por_prov = pd.concat([por_prov.head(TOP_PROV),
+                                      pd.Series({"Otros proveedores": por_prov.iloc[TOP_PROV:].sum()})])
+            nested_donut_recharts(monto_facturado, monto_no_facturado, por_prov, height=380)
+        with col_kpi:
+            k1, k2 = st.columns(2)
+            k1.metric("Total gastado", fmt(total_gastado))
+            k2.metric("Movimientos", f"{movimientos:,}")
+            k1.metric("UUID's encontrados", f"{facturados:,}")
+            k2.metric("UUID's no encontrados", f"{no_facturados:,}")
+            k1.metric("Monto facturado", fmt(monto_facturado))
+            k2.metric("Monto no facturado", fmt(monto_no_facturado))
+            gauge_svg(pct_facturado, height=210)
 
