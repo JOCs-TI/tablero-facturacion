@@ -152,65 +152,6 @@ const data = {json.dumps(data)};
 </body></html>"""
     components.html(html, height=height, scrolling=False)
 
-def waterfall_recharts(df_in, label_col, valor_col, color_pos, color_neg, color_total,
-                       total_label="TOTAL", height=380):
-    """Version Recharts de waterfall_chart(): misma logica de inicio/fin acumulado,
-    pero como BarChart de Recharts con barras 'flotantes' (dataKey=[low,high] +
-    'shape' a la medida para colorear) -- la tecnica que documenta Recharts para
-    graficas de cascada."""
-    df = df_in[[label_col, valor_col]].copy()
-    df.columns = ["label", "valor"]
-    total = df["valor"].sum()
-    df = pd.concat([df, pd.DataFrame({"label": [total_label], "valor": [total]})], ignore_index=True)
-    acumulado, inicio = 0.0, []
-    for i, v in enumerate(df["valor"]):
-        if i == len(df) - 1:
-            inicio.append(0.0)
-        else:
-            inicio.append(acumulado)
-            acumulado += v
-    df["inicio"] = inicio
-    df["fin"] = df["inicio"] + df["valor"]
-    df["tipo"] = ["Total" if l == total_label else ("Resta" if v < 0 else "Suma")
-                 for l, v in zip(df["label"], df["valor"])]
-    df["etiqueta"] = df["valor"].map(fmt_m)
-
-    data = [
-        {"label": r.label, "range": [min(r.inicio, r.fin), max(r.inicio, r.fin)],
-         "valor": r.valor, "tipo": r.tipo, "etiqueta": r.etiqueta}
-        for r in df.itertuples()
-    ]
-    colores = json.dumps({"Suma": color_pos, "Resta": color_neg, "Total": color_total})
-
-    render_js = f"""
-const h = React.createElement;
-const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList }} = Recharts;
-const COLORES = {colores};
-
-function CustomBar(props) {{
-  const {{ x, y, width, height, payload }} = props;
-  return h('rect', {{ x, y, width, height, fill: COLORES[payload.tipo], rx: 3, ry: 3 }});
-}}
-
-const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(
-  h(ResponsiveContainer, {{ width: '100%', height: {height - 20} }},
-    h(BarChart, {{ data: data, margin: {{ top: 28, right: 20, left: 10, bottom: 10 }} }},
-      h(CartesianGrid, {{ strokeDasharray: '3 3', vertical: false }}),
-      h(XAxis, {{ dataKey: 'label', tick: {{ fontSize: 11, fill: '#54616f' }},
-                 axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(YAxis, {{ tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
-                 axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta, p.payload.label] }}),
-      h(Bar, {{ dataKey: 'range', shape: CustomBar, isAnimationActive: false }},
-        h(LabelList, {{ dataKey: 'etiqueta', position: 'top', fontSize: 11, fill: '#3d4752' }})
-      )
-    )
-  )
-);
-"""
-    recharts_component(render_js, data, height=height)
-
 def _ancho_eje_categoria(labels, min_w=90, max_w=240, por_char=6.5):
     return int(min(max_w, max(min_w, por_char * max((len(str(l)) for l in labels), default=10))))
 
@@ -290,6 +231,100 @@ root.render(
       ),
       h(Line, {{ yAxisId: 'der', type: 'monotone', dataKey: 'acumulado', stroke: '{C_MARGEN}',
                 strokeWidth: 2.5, dot: {{ r: 4, fill: '{C_MARGEN}' }}, isAnimationActive: false }})
+    )
+  )
+);
+"""
+    recharts_component(render_js, data, height=height)
+
+def bullet_uo_recharts(df, categoria_col, total_col, segmentos, egreso_col, utilidad_col,
+                       color_total=JOCS_AZUL, height=420):
+    """Barra 'bala' (bullet chart): por cada categoría, una barra ancha y tenue de
+    fondo con altura = 'total_col' (ej. Ingreso) + una barra angosta superpuesta,
+    apilada desde abajo con 'segmentos' (lista de (etiqueta, color, columna), ej.
+    Sueldos/Costos de Referencia/Recibidas = Egresos). La diferencia visual entre
+    el tope de los segmentos y el tope de la barra de fondo ES la Utilidad
+    Operativa (o la pérdida, si los segmentos se pasan del tope) -- no se dibuja
+    aparte, se ve directo en la geometría. Tooltip a la medida: 'total_col',
+    'egreso_col' (suma de los segmentos) y 'utilidad_col'. Escala siempre lineal
+    (no log): la conversión valor→píxel de los segmentos se calcula a mano a
+    partir de la altura que Recharts ya calculó para la barra de fondo, y esa
+    cuenta solo es válida en escala lineal."""
+    data = []
+    for _, row in df.iterrows():
+        d = {"categoria": str(row[categoria_col]), "total": float(row[total_col]),
+             "egreso": float(row[egreso_col]), "utilidad": float(row[utilidad_col])}
+        for _, _, c in segmentos:
+            d[c] = float(row[c])
+        data.append(d)
+    techo = max([max(d["total"], d["egreso"]) for d in data], default=1.0) * 1.15
+
+    pasos_segmento = "\n".join(f"""
+  {{
+    const segH = Math.max(payload[{json.dumps(col)}] * pxPerUnit, 0);
+    yCursor -= segH;
+    elementos.push(h('rect', {{ key: {json.dumps(col)}, x: segX, y: yCursor, width: segAncho,
+                              height: segH, fill: '{color}' }}));
+  }}""" for _, color, col in segmentos)
+
+    leyenda_items = [("Ingreso (total)", color_total)] + [(etq, color) for etq, color, _ in segmentos]
+    leyenda_js = ",".join(
+        f"""h('div', {{ key: {json.dumps(nombre)}, style: {{ display: 'flex', alignItems: 'center',
+                      gap: 6, fontSize: 12, color: '#3d4752' }} }},
+          h('span', {{ style: {{ width: 10, height: 10, borderRadius: 2, background: '{color}',
+                               display: 'inline-block' }} }}),
+          {json.dumps(nombre)}
+        )""" for nombre, color in leyenda_items)
+
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip }} = Recharts;
+
+function BarraBullet(props) {{
+  const {{ x, y, width, height, payload }} = props;
+  const total = payload.total;
+  const pxPerUnit = total > 0 ? height / total : 0;
+  const elementos = [];
+  elementos.push(h('rect', {{ key: 'fondo', x, y, width, height,
+                            fill: '{color_total}', fillOpacity: 0.12,
+                            stroke: '{color_total}', strokeWidth: 1.5 }}));
+  const segAncho = width * 0.55;
+  const segX = x + (width - segAncho) / 2;
+  let yCursor = y + height;
+  {pasos_segmento}
+  return h('g', {{}}, elementos);
+}}
+
+function TooltipBullet(props) {{
+  const {{ active, payload, label }} = props;
+  if (!active || !payload || !payload.length) return null;
+  const fila = payload[0].payload;
+  const colorUtilidad = fila.utilidad < 0 ? '{C_NEG}' : '{color_total}';
+  return h('div', {{ style: {{ background: '#fff', border: '1px solid #d7dce1',
+                             borderRadius: 6, padding: '8px 12px', fontSize: 13 }} }},
+    h('div', {{ style: {{ fontWeight: 700, marginBottom: 4, color: '{JOCS_AZUL}' }} }}, label),
+    h('div', {{}}, 'Ingreso : ' + fmtMoney(fila.total)),
+    h('div', {{}}, 'Egresos : ' + fmtMoney(fila.egreso)),
+    h('div', {{ style: {{ color: colorUtilidad, fontWeight: 600 }} }},
+      'Utilidad Operativa : ' + fmtMoney(fila.utilidad))
+  );
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h('div', {{}},
+    h('div', {{ style: {{ display: 'flex', flexWrap: 'wrap', gap: 14, justifyContent: 'center',
+                       marginBottom: 6 }} }}, {leyenda_js}),
+    h(ResponsiveContainer, {{ width: '100%', height: {height - 34} }},
+      h(BarChart, {{ data: data, margin: {{ top: 10, right: 20, left: 10, bottom: 50 }} }},
+        h(CartesianGrid, {{ strokeDasharray: '3 3', vertical: false }}),
+        h(XAxis, {{ dataKey: 'categoria', angle: -30, textAnchor: 'end', interval: 0,
+                   tick: {{ fontSize: 10, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+        h(YAxis, {{ domain: [0, {techo}], tickFormatter: fmtMoney,
+                   tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+        h(Tooltip, {{ content: h(TooltipBullet) }}),
+        h(Bar, {{ dataKey: 'total', shape: BarraBullet, isAnimationActive: false }})
+      )
     )
   )
 );
@@ -928,31 +963,34 @@ if pagina == "Utilidad Operativa":
     if utilidad_op_f.empty:
         st.info("Sin datos de Utilidad Operativa para el periodo y aduana seleccionados.")
     else:
-        st.divider()
-        st.subheader("Utilidad Operativa")
-        st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
-                   "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
-                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA').")
-        tot = utilidad_op_f[["HONORARIOS AA", "SUELDOS", "ctos_referencia", "ingreso", "egreso"]].sum()
-        # "Ingresos"/"Recibidas" se leen de ingreso/egreso (ya con el ajuste de
-        # IMILE LAREDO sumado) menos su componente que ya va en otra barra --
-        # así el total de la cascada cuadra con la suma de utilidad por aduana.
-        df_uo = pd.DataFrame({
-            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Costos de Referencia", "Recibidas"],
-            "valor": [tot["ingreso"] - tot["HONORARIOS AA"], tot["HONORARIOS AA"],
-                     -tot["SUELDOS"], -tot["ctos_referencia"],
-                     -(tot["egreso"] - tot["SUELDOS"] - tot["ctos_referencia"])],
-        })
-        waterfall_recharts(df_uo, "label", "valor",
-                          color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
-                          total_label="Utilidad Operativa", height=400)
-
-        st.divider()
-        st.subheader("Utilidad Operativa por Aduana")
         uo_ad = utilidad_op_f.groupby("aduana")[["emitidas", "HONORARIOS AA", "SUELDOS",
                                                  "ctos_referencia", "recibida", "ingreso",
                                                  "egreso", "utilidad"]].sum()
         aduanas_uo = uo_ad.sort_values("utilidad", ascending=False).index.tolist()
+
+        st.divider()
+        st.subheader("Utilidad Operativa por Aduana")
+        st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
+                   "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
+                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA'). Barra "
+                   "tenue = Ingreso; barra angosta apilada = Sueldos + Costos de Referencia + "
+                   "Recibidas (Egresos) -- la diferencia de altura es la Utilidad Operativa.")
+        df_bullet_uo = uo_ad.reset_index().sort_values("ingreso", ascending=False)
+        # El segmento "Recibidas" se calcula como resto (egreso - Sueldos - Costos de
+        # Referencia), no se toma la columna 'recibida' cruda directo -- para la
+        # mayoría de las aduanas da lo mismo (así se define 'egreso'), pero en IMILE
+        # LAREDO 'egreso' trae un ajuste extra (ver load_imile_laredo_extra) que no
+        # vive en ninguna columna individual; sin este resto, la barra apilada se
+        # quedaría corta y la Utilidad Operativa se vería inflada visualmente.
+        df_bullet_uo["recibida_visual"] = (df_bullet_uo["egreso"] - df_bullet_uo["SUELDOS"]
+                                           - df_bullet_uo["ctos_referencia"])
+        bullet_uo_recharts(
+            df_bullet_uo, "aduana", "ingreso",
+            segmentos=[("Sueldos", "#8fb09c", "SUELDOS"),
+                      ("Costos de Referencia", JOCS_VERDE, "ctos_referencia"),
+                      ("Recibidas", "#2f4a38", "recibida_visual")],
+            egreso_col="egreso", utilidad_col="utilidad", color_total=JOCS_AZUL, height=440,
+        )
 
         bc1, bc2 = st.columns([1.6, 1])
         with bc1:
