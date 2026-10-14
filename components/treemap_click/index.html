@@ -37,47 +37,118 @@ const Streamlit = {
   },
 };
 
-function fmtMoney(v) {
-  const s = v < 0 ? '-' : '';
-  const a = Math.abs(v);
-  if (a >= 1e6) return s + '$' + (a / 1e6).toFixed(1) + 'M';
-  if (a >= 1e3) return s + '$' + Math.round(a / 1e3) + 'k';
-  return s + '$' + Math.round(a).toLocaleString('en-US');
+/* Drill-down de 3 niveles (aduana -> empleado -> percepcion) ANIMADO: a
+   diferencia del enfoque anterior (un componente nuevo por nivel, cada clic
+   disparaba un rerun completo de Streamlit que destruia y recreaba el iframe
+   entero -- nada que animar entre un estado y otro), aqui Python manda el
+   arbol COMPLETO una sola vez y la navegacion entre niveles vive aqui mismo
+   (variable 'path', sin useState de React porque no usamos JSX/hooks en este
+   archivo -- se re-pinta a mano llamando pintar() despues de cada cambio).
+   Como se reusa el mismo ReactDOM root entre niveles (igual que antes, ver
+   'mounted'), Recharts SI puede interpolar el cambio de tamaño/posicion de
+   las cajas entre un nivel y otro -- por eso ahora importa que
+   isAnimationActive sea true (antes estaba en false, no habia nada que
+   animar porque cada nivel vivia en su propio iframe/root).
+   Cada clic sigue avisando a Streamlit via setComponentValue() (para que las
+   secciones de Python de abajo -- tabla de empleados, Ficha Tecnica -- se
+   mantengan sincronizadas), pero ESE aviso ya no bloquea la animacion: el
+   cambio visual es instantaneo/local, el aviso a Python viaja en paralelo. */
+let mounted = false;
+let arbol = [];
+let path = [];          // [] | [aduana] | [aduana, empleado]
+let ultimoPathEnviado = null;
+let alturaActual = 420;
+
+function nodoEn(arbolRaiz, p) {
+  if (p.length === 0) return { boxes: arbolRaiz, nivel: 0 };
+  const aduana = arbolRaiz.find(a => a.name === p[0]);
+  if (!aduana) return { boxes: arbolRaiz, nivel: 0 };
+  if (p.length === 1) return { boxes: aduana.empleados, nivel: 1 };
+  const empleado = aduana.empleados.find(e => e.name === p[1]);
+  if (!empleado) return { boxes: aduana.empleados, nivel: 1 };
+  return { boxes: empleado.componentes, nivel: 2 };
 }
 
-let mounted = false;
+function irA(nuevoPath) {
+  path = nuevoPath;
+  pintar();
+  ultimoPathEnviado = path;
+  Streamlit.setComponentValue(path);
+}
 
-function render(args) {
-  const data = args.data || [];
-  const height = args.height || 360;
+function Nodo(props) {
+  const h = React.createElement;
+  const { x, y, width, height: hgt, color, name, etiqueta, clicable } = props;
+  const cabe = width > 90 && hgt > 34;
+  return h('g', {
+    onClick: clicable ? () => irA(path.concat([name])) : undefined,
+    style: { cursor: clicable ? 'pointer' : 'default' },
+  },
+    h('rect', { x, y, width, height: hgt, fill: color, stroke: '#FFFFFF', strokeWidth: 2, rx: 4 }),
+    cabe ? h('text', { x: x + width / 2, y: y + hgt / 2 - 7, textAnchor: 'middle',
+                      fill: '#FFFFFF', fontSize: 11, fontWeight: 600, pointerEvents: 'none' }, name) : null,
+    (cabe && hgt > 50) ? h('text', { x: x + width / 2, y: y + hgt / 2 + 8, textAnchor: 'middle',
+                      fill: '#FFFFFF', fontSize: 10, opacity: 0.9, pointerEvents: 'none' }, etiqueta) : null
+  );
+}
+
+function pintar() {
   const h = React.createElement;
   const { ResponsiveContainer, Treemap } = Recharts;
+  const { boxes, nivel } = nodoEn(arbol, path);
+  const esHoja = nivel === 2;
 
-  function Nodo(props) {
-    const { x, y, width, height: hgt, color, name, etiqueta } = props;
-    const cabe = width > 90 && hgt > 34;
-    return h('g', {
-      onClick: () => Streamlit.setComponentValue(name),
-      style: { cursor: 'pointer' },
-    },
-      h('rect', { x, y, width, height: hgt, fill: color, stroke: '#FFFFFF', strokeWidth: 2, rx: 4 }),
-      cabe ? h('text', { x: x + width / 2, y: y + hgt / 2 - 7, textAnchor: 'middle',
-                        fill: '#FFFFFF', fontSize: 11, fontWeight: 600, pointerEvents: 'none' }, name) : null,
-      (cabe && hgt > 50) ? h('text', { x: x + width / 2, y: y + hgt / 2 + 8, textAnchor: 'middle',
-                        fill: '#FFFFFF', fontSize: 10, opacity: 0.9, pointerEvents: 'none' }, etiqueta) : null
-    );
-  }
+  const migas = [{ etiqueta: 'Aduanas', p: [] }].concat(
+    path.map((nombre, i) => ({ etiqueta: nombre, p: path.slice(0, i + 1) }))
+  );
+  const breadcrumb = h('div', {
+    style: { display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center',
+            fontSize: 12, color: '#54616f', marginBottom: 6, minHeight: 18 },
+  }, migas.map((m, i) => h(React.Fragment, { key: i },
+    i > 0 ? h('span', { style: { color: '#b7c0c9' } }, '›') : null,
+    h('span', {
+      onClick: i === migas.length - 1 ? undefined : () => irA(m.p),
+      style: { cursor: i === migas.length - 1 ? 'default' : 'pointer',
+              fontWeight: i === migas.length - 1 ? 700 : 400,
+              color: i === migas.length - 1 ? '#244072' : '#54616f',
+              textDecoration: i === migas.length - 1 ? 'none' : 'underline' },
+    }, m.etiqueta)
+  )));
 
   if (!mounted) {
     window.__root = ReactDOM.createRoot(document.getElementById('root'));
     mounted = true;
   }
   window.__root.render(
-    h(ResponsiveContainer, { width: '100%', height: height - 10 },
-      h(Treemap, { data: data, dataKey: 'size', isAnimationActive: false, content: h(Nodo) })
+    h('div', {},
+      breadcrumb,
+      h(ResponsiveContainer, { width: '100%', height: alturaActual - 30 },
+        h(Treemap, {
+          data: boxes, dataKey: 'size', isAnimationActive: true, animationDuration: 350,
+          content: h(Nodo, { clicable: !esHoja }),
+        })
+      )
     )
   );
-  Streamlit.setFrameHeight(height);
+  Streamlit.setFrameHeight(alturaActual);
+}
+
+function render(args) {
+  arbol = args.arbol || [];
+  alturaActual = args.height || 420;
+  const pathPython = args.path || [];
+  // Si Python manda un path distinto al que ya tenemos pintado Y distinto al
+  // ultimo que nosotros mismos mandamos (el eco normal de nuestro propio
+  // clic, que no debe pisar la navegacion que ya se animo localmente), se
+  // sincroniza -- pasa cuando cambia el filtro global de Aduana/Periodo o
+  // cuando el path quedo invalido y Python lo reseteo por su cuenta.
+  const pathActualTxt = JSON.stringify(path);
+  const pathPythonTxt = JSON.stringify(pathPython);
+  const ultimoEnviadoTxt = JSON.stringify(ultimoPathEnviado);
+  if (pathPythonTxt !== pathActualTxt && pathPythonTxt !== ultimoEnviadoTxt) {
+    path = pathPython;
+  }
+  pintar();
 }
 
 Streamlit.init();

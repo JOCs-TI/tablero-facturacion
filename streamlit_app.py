@@ -155,9 +155,9 @@ def gauge_svg(frac, height=200, bandas=None, etiqueta="del gasto facturado"):
     React/Recharts: la aguja es el único dato variable, no hace falta nada
     interactivo). 'frac' en [0,1] (se clampa). 'bandas' (opcional): lista de
     (fracción_de_ancho, color) que suman 1.0, de izquierda (bajo) a derecha
-    (alto); por default 3 tercios rojo/ámbar/verde."""
+    (alto); por default rojo 0-50%, ámbar 50-80%, verde 80-100%."""
     frac = max(0.0, min(1.0, frac))
-    bandas = bandas or [(1 / 3, C_NEG), (1 / 3, "#e8a93c"), (1 / 3, JOCS_VERDE)]
+    bandas = bandas or [(0.50, C_NEG), (0.30, "#e8a93c"), (0.20, JOCS_VERDE)]
     cx, cy, r_out, r_in = 120, 120, 105, 68
 
     def punto(r, ang_deg):
@@ -688,29 +688,57 @@ root.render(
 """
     recharts_component(render_js, data, height=height)
 
-_treemap_click_component = components.declare_component(
+_treemap_nomina_component = components.declare_component(
     "treemap_click", path=str(BASE / "components" / "treemap_click"))
 
-def treemap_click_recharts(serie, height=360, formateador=fmt_m, valores_reales=None,
-                           color_pos=None, color_neg=None, key=None):
-    """Treemap clicable (componente real de Streamlit, no st.components.v1.html():
-    ese es de una sola via, Python -> HTML, y no puede devolver el clic a Python.
-    Al hacer clic en una caja, Streamlit hace un rerun con el nombre de esa caja
-    disponible aqui -- así se arma el drill-down aduana -> empleado -> percepción
-    pedido en el PDF ("al picarle a una...") sin selectbox.
-    'valores_reales'/'color_pos'/'color_neg': igual que antes, para componentes
-    que pueden ser negativos (el área de una caja no puede serlo)."""
-    s = serie[serie > 0]
-    if s.empty:
-        return None
-    reales = valores_reales.reindex(s.index) if valores_reales is not None else s
-    if valores_reales is not None:
-        color_list = [color_pos if v >= 0 else color_neg for v in reales]
-    else:
-        color_list = [color_for(i) for i in range(len(s))]
-    data = [{"name": str(label), "size": float(v), "etiqueta": formateador(real), "color": c}
-            for label, v, real, c in zip(s.index, s.values, reales.values, color_list)]
-    return _treemap_click_component(data=data, height=height, key=key, default=None)
+def _construir_arbol_nomina(sueldos_f):
+    """Arma los 3 niveles del treemap de Nómina (aduana -> empleado ->
+    componentes de percepción) de una sola pasada, para mandárselos COMPLETOS
+    al componente de React (ver treemap_nomina_recharts) -- así el drill-down
+    puede vivir y animarse del lado del navegador en vez de ir a buscar cada
+    nivel a Streamlit con un rerun por clic."""
+    por_aduana = sueldos_f.groupby("aduana")["total"].sum().sort_values(ascending=False)
+    arbol = []
+    for aduana, total_aduana in por_aduana.items():
+        if total_aduana <= 0:
+            continue
+        tabla_ad = sueldos_f[sueldos_f["aduana"] == aduana]
+        por_emp = tabla_ad.groupby("nombre")["total"].sum().sort_values(ascending=False)
+        empleados = []
+        for empleado, total_emp in por_emp.items():
+            if total_emp <= 0:
+                continue
+            fila_sum = tabla_ad.loc[tabla_ad["nombre"] == empleado,
+                                    [c for c, _ in COLS_NOMINA]].sum()
+            componentes = [
+                {"name": etq, "size": float(abs(fila_sum[c])), "etiqueta": fmt(fila_sum[c]),
+                 "color": JOCS_AZUL if fila_sum[c] >= 0 else C_NEG}
+                for c, etq in COLS_NOMINA if abs(fila_sum[c]) > 0
+            ]
+            empleados.append({"name": str(empleado), "size": float(total_emp),
+                              "etiqueta": fmt_m(total_emp), "color": color_for(len(empleados)),
+                              "componentes": componentes})
+        arbol.append({"name": str(aduana), "size": float(total_aduana),
+                      "etiqueta": fmt_m(total_aduana), "color": color_for(len(arbol)),
+                      "empleados": empleados})
+    return arbol
+
+def treemap_nomina_recharts(arbol, height=420, path=None, key=None):
+    """Treemap jerárquico de 3 niveles con drill-down ANIMADO, enteramente del
+    lado del navegador (componente real de Streamlit, no st.components.v1.html():
+    ese es de una sola vía, Python -> HTML, no puede devolver el clic a
+    Python). Se le manda el ÁRBOL COMPLETO de una sola vez (ver
+    _construir_arbol_nomina) -- a diferencia del enfoque anterior (un
+    componente nuevo por nivel: cada clic destruía y recreaba el iframe
+    entero, sin nada que animar entre un estado y otro), aquí los 3 niveles
+    viven en el MISMO componente de React, que trae su propio estado de
+    navegación (una miga de pan clicable + Recharts animando el cambio de
+    tamaño/posición de las cajas). Cada clic sigue avisando a Streamlit con
+    el nuevo 'path' (lista de nombres: [] | [aduana] | [aduana, empleado])
+    para que las secciones de Python de abajo (tabla, Ficha Técnica) se
+    mantengan sincronizadas -- pero ese aviso ya no bloquea la animación."""
+    return _treemap_nomina_component(arbol=arbol, height=height, path=path or [],
+                                     key=key, default=None)
 
 # ── Descubrimiento de archivos ──────────────────────────────────────────────────
 @st.cache_data(ttl=300, show_spinner="Descargando datos de Google Sheets...")
@@ -1553,51 +1581,44 @@ if pagina == "Nómina":
     st.divider()
     st.subheader("Desglose por Aduana, Personal y Percepción")
     st.caption("Haz clic en un cuadro para profundizar: aduana → empleados de esa aduana → "
-               "componentes de su percepción.")
+               "componentes de su percepción. La miga de pan de arriba regresa a un nivel anterior.")
 
-    if "nom_aduana" not in st.session_state:
-        st.session_state.nom_aduana = None
-    if "nom_empleado" not in st.session_state:
-        st.session_state.nom_empleado = None
+    if "nom_path" not in st.session_state:
+        st.session_state.nom_path = []
 
-    por_aduana_nom = sueldos_f.groupby("aduana")["total"].sum().sort_values(ascending=False)
+    arbol_nomina = _construir_arbol_nomina(sueldos_f)
+    aduanas_arbol = {n["name"]: n for n in arbol_nomina}
+
     # Si cambiaron los filtros globales y la aduana/empleado seleccionado ya no
     # existe en los datos filtrados, se descarta la selección en vez de tronar.
-    if st.session_state.nom_aduana not in por_aduana_nom.index:
-        st.session_state.nom_aduana = None
-        st.session_state.nom_empleado = None
+    nom_path = list(st.session_state.nom_path)
+    if nom_path and nom_path[0] not in aduanas_arbol:
+        nom_path = []
+    elif len(nom_path) >= 2:
+        empleados_arbol = {e["name"] for e in aduanas_arbol[nom_path[0]]["empleados"]}
+        if nom_path[1] not in empleados_arbol:
+            nom_path = nom_path[:1]
+    if nom_path != st.session_state.nom_path:
+        st.session_state.nom_path = nom_path
 
-    st.markdown("**1. Aduanas** · el tamaño de cada cuadro es su nómina total")
-    clic_aduana = treemap_click_recharts(por_aduana_nom, height=240, key="tm_aduana")
-    if clic_aduana in por_aduana_nom.index and clic_aduana != st.session_state.nom_aduana:
-        st.session_state.nom_aduana = clic_aduana
-        st.session_state.nom_empleado = None
+    clic_path = treemap_nomina_recharts(arbol_nomina, height=460, path=st.session_state.nom_path,
+                                        key="tm_nomina")
+    if clic_path is not None and clic_path != st.session_state.nom_path:
+        st.session_state.nom_path = clic_path
         st.rerun()
 
-    if st.session_state.nom_aduana is None:
+    nom_path = st.session_state.nom_path
+    aduana_nom_sel = nom_path[0] if len(nom_path) >= 1 else None
+    empleado_sel = nom_path[1] if len(nom_path) >= 2 else None
+
+    if aduana_nom_sel is None:
         st.info("Haz clic en una aduana para ver sus empleados.")
     else:
-        aduana_nom_sel = st.session_state.nom_aduana
-        if st.button(f"← Quitar selección de aduana ({aduana_nom_sel})"):
-            st.session_state.nom_aduana = None
-            st.session_state.nom_empleado = None
-            st.rerun()
-
         tabla_nom = sueldos_f[sueldos_f["aduana"] == aduana_nom_sel].copy()
         tot_aduana_nom = tabla_nom["total"].sum()
         tabla_nom["pct"] = tabla_nom["total"] / tot_aduana_nom if tot_aduana_nom else 0.0
         tabla_nom = tabla_nom.sort_values("total", ascending=False)
         st.caption(f"Total nómina {aduana_nom_sel}: {fmt_m(tot_aduana_nom)} · {len(tabla_nom)} empleado(s)")
-
-        por_empleado_nom = tabla_nom.groupby("nombre")["total"].sum().sort_values(ascending=False)
-        if st.session_state.nom_empleado not in por_empleado_nom.index:
-            st.session_state.nom_empleado = None
-
-        st.markdown(f"**2. Empleados de {aduana_nom_sel}** · tamaño = sueldo total")
-        clic_emp = treemap_click_recharts(por_empleado_nom, height=320, key="tm_empleado")
-        if clic_emp in por_empleado_nom.index and clic_emp != st.session_state.nom_empleado:
-            st.session_state.nom_empleado = clic_emp
-            st.rerun()
 
         st.dataframe(pd.DataFrame({
             "Empleado": tabla_nom["nombre"],
@@ -1605,14 +1626,9 @@ if pagina == "Nómina":
             "Sueldo Total": tabla_nom["total"].map(fmt),
         }), use_container_width=True, hide_index=True)
 
-        if st.session_state.nom_empleado is None:
+        if empleado_sel is None:
             st.info("Haz clic en un empleado para ver el desglose de su percepción.")
         else:
-            empleado_sel = st.session_state.nom_empleado
-            if st.button(f"← Quitar selección de empleado ({empleado_sel})"):
-                st.session_state.nom_empleado = None
-                st.rerun()
-
             st.divider()
             st.subheader("Ficha Técnica del Trabajador")
             fila_emp = sueldos_f[sueldos_f["nombre"] == empleado_sel]
@@ -1624,11 +1640,6 @@ if pagina == "Nómina":
             c1.metric("Aduana", fila_emp["aduana"].iloc[0] if len(fila_emp) else "—")
             c2.metric("Costo Total Neto", fmt_m(fila_emp_sum["total"]))
 
-            st.markdown(f"**3. Percepción de {empleado_sel}** · azul = positivo, "
-                       "rojo = negativo (ej. ajustes de Provisiones)")
-            serie_comp_real = pd.Series({et: fila_emp_sum[c] for c, et in COLS_NOMINA})
-            treemap_click_recharts(serie_comp_real.abs(), height=320, valores_reales=serie_comp_real,
-                                   color_pos=JOCS_AZUL, color_neg=C_NEG, key="tm_comp")
             # st.caption() renderiza markdown: dos o mas "$" sueltos en el mismo texto los
             # interpreta como un bloque de LaTeX y se come los signos de pesos. Se escapan
             # a "\$" para que se vean literales (aqui se juntan 10 montos en una sola linea).
