@@ -189,16 +189,20 @@ root.render(
 def pareto_recharts(serie, color, height=420, umbral=0.8, color_neg=None):
     """Version Recharts de pareto_chart(): barras descendentes + linea de %
     acumulado (ComposedChart con dos ejes Y). 'color_neg' (opcional): si se pasa,
-    'serie' puede traer negativos -- se ordena/acumula por magnitud absoluta (ya
-    que un % acumulado no tiene sentido sobre una suma que cruza por cero) y cada
-    barra se colorea 'color' o 'color_neg' segun su signo real (ej. Utilidad
-    Operativa, que puede ser negativa por aduana)."""
+    'serie' puede traer negativos -- se ordena por magnitud absoluta (para que
+    las barras negativas no queden todas al final) y cada barra se colorea
+    'color' o 'color_neg' segun su signo real (ej. Utilidad Operativa, que puede
+    ser negativa por aduana). La línea de % acumulado, en ese caso, se arma SOLO
+    con las barras positivas (color): las negativas no suman nada a la línea (se
+    queda plana en ese punto) -- un acumulado sobre valor absoluto no tenía
+    sentido de negocio (restar una pérdida la hacía "ayudar" a llegar al 100%)."""
     df = serie.rename("valor").reset_index()
     df.columns = ["label", "valor"]
     orden_col = df["valor"].abs() if color_neg is not None else df["valor"]
     df = df.assign(_orden=orden_col).sort_values("_orden", ascending=False).drop(columns="_orden")
-    tot = (df["valor"].abs() if color_neg is not None else df["valor"]).sum() or 1.0
-    df["acumulado"] = (df["valor"].abs() if color_neg is not None else df["valor"]).cumsum() / tot
+    valores_acum = df["valor"].clip(lower=0) if color_neg is not None else df["valor"]
+    tot = valores_acum.sum() or 1.0
+    df["acumulado"] = valores_acum.cumsum() / tot
     df["etiqueta"] = df["valor"].map(fmt_m)
     df["color"] = color if color_neg is None else df["valor"].map(lambda v: color if v >= 0 else color_neg)
     data = [{"label": str(r.label), "valor": float(r.valor), "etiqueta": r.etiqueta,
@@ -239,17 +243,17 @@ root.render(
 
 def bullet_uo_recharts(df, categoria_col, total_col, segmentos, egreso_col, utilidad_col,
                        color_total=JOCS_AZUL, height=420):
-    """Barra 'bala' (bullet chart): por cada categoría, una barra ancha y tenue de
-    fondo con altura = 'total_col' (ej. Ingreso) + una barra angosta superpuesta,
-    apilada desde abajo con 'segmentos' (lista de (etiqueta, color, columna), ej.
-    Sueldos/Costos de Referencia/Recibidas = Egresos). La diferencia visual entre
-    el tope de los segmentos y el tope de la barra de fondo ES la Utilidad
-    Operativa (o la pérdida, si los segmentos se pasan del tope) -- no se dibuja
-    aparte, se ve directo en la geometría. Tooltip a la medida: 'total_col',
-    'egreso_col' (suma de los segmentos) y 'utilidad_col'. Escala siempre lineal
-    (no log): la conversión valor→píxel de los segmentos se calcula a mano a
-    partir de la altura que Recharts ya calculó para la barra de fondo, y esa
-    cuenta solo es válida en escala lineal."""
+    """Por cada categoría, una barra apilada desde abajo con 'segmentos' (lista de
+    (etiqueta, color, columna), ej. Sueldos/Costos de Referencia/Recibidas =
+    Egresos), cuya altura TOTAL de eje llega hasta 'total_col' (ej. Ingreso) aunque
+    los segmentos coloreados no la alcancen -- el espacio vacío que queda arriba
+    (sin colorear, hasta 'total_col') ES la Utilidad Operativa; no se dibuja
+    aparte, se lee directo como el hueco en la geometría (o si los segmentos se
+    pasan del tope, como pérdida). Tooltip a la medida: 'total_col', 'egreso_col'
+    (suma de los segmentos) y 'utilidad_col'. Escala siempre lineal (no log): la
+    conversión valor→píxel de los segmentos se calcula a mano a partir de la
+    altura que Recharts ya calculó para 'total_col', y esa cuenta solo es válida
+    en escala lineal."""
     data = []
     for _, row in df.iterrows():
         d = {"categoria": str(row[categoria_col]), "total": float(row[total_col]),
@@ -263,11 +267,11 @@ def bullet_uo_recharts(df, categoria_col, total_col, segmentos, egreso_col, util
   {{
     const segH = Math.max(payload[{json.dumps(col)}] * pxPerUnit, 0);
     yCursor -= segH;
-    elementos.push(h('rect', {{ key: {json.dumps(col)}, x: segX, y: yCursor, width: segAncho,
+    elementos.push(h('rect', {{ key: {json.dumps(col)}, x, y: yCursor, width,
                               height: segH, fill: '{color}' }}));
   }}""" for _, color, col in segmentos)
 
-    leyenda_items = [("Ingreso (total)", color_total)] + [(etq, color) for etq, color, _ in segmentos]
+    leyenda_items = [(etq, color) for etq, color, _ in segmentos]
     leyenda_js = ",".join(
         f"""h('div', {{ key: {json.dumps(nombre)}, style: {{ display: 'flex', alignItems: 'center',
                       gap: 6, fontSize: 12, color: '#3d4752' }} }},
@@ -285,11 +289,6 @@ function BarraBullet(props) {{
   const total = payload.total;
   const pxPerUnit = total > 0 ? height / total : 0;
   const elementos = [];
-  elementos.push(h('rect', {{ key: 'fondo', x, y, width, height,
-                            fill: '{color_total}', fillOpacity: 0.12,
-                            stroke: '{color_total}', strokeWidth: 1.5 }}));
-  const segAncho = width * 0.55;
-  const segX = x + (width - segAncho) / 2;
   let yCursor = y + height;
   {pasos_segmento}
   return h('g', {{}}, elementos);
@@ -972,9 +971,9 @@ if pagina == "Utilidad Operativa":
         st.subheader("Utilidad Operativa por Aduana")
         st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
                    "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
-                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA'). Barra "
-                   "tenue = Ingreso; barra angosta apilada = Sueldos + Costos de Referencia + "
-                   "Recibidas (Egresos) -- la diferencia de altura es la Utilidad Operativa.")
+                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA'). Cada "
+                   "barra llega hasta el Ingreso; lo apilado (Sueldos + Costos de Referencia + "
+                   "Recibidas) son los Egresos -- el espacio vacío arriba es la Utilidad Operativa.")
         df_bullet_uo = uo_ad.reset_index().sort_values("ingreso", ascending=False)
         # El segmento "Recibidas" se calcula como resto (egreso - Sueldos - Costos de
         # Referencia), no se toma la columna 'recibida' cruda directo -- para la
