@@ -76,19 +76,90 @@ function irA(nuevoPath) {
   Streamlit.setComponentValue(path);
 }
 
+/* Medidor de texto real (canvas, no una estimacion a ojo) -- asi se sabe si
+   un nombre cabe en 1 renglon o hace falta partirlo en 2, y cuanto hay que
+   comprimirlo (textLength) si ni partido en 2 alcanza. Sin esto, los nombres
+   largos se salian de su caja (el problema que se esta corrigiendo aqui). */
+const _medidor = document.createElement('canvas').getContext('2d');
+function medirAncho(txt, fontSize, weight) {
+  _medidor.font = `${weight} ${fontSize}px system-ui, 'Segoe UI', Roboto, sans-serif`;
+  return _medidor.measureText(txt).width;
+}
+
+function partirNombre(nombre) {
+  const palabras = nombre.trim().split(/\s+/);
+  if (palabras.length === 1) return [nombre, ''];
+  let mejorCorte = 1, mejorDif = Infinity;
+  for (let i = 1; i < palabras.length; i++) {
+    const l1 = palabras.slice(0, i).join(' ').length;
+    const l2 = palabras.slice(i).join(' ').length;
+    const dif = Math.abs(l1 - l2);
+    if (dif < mejorDif) { mejorDif = dif; mejorCorte = i; }
+  }
+  return [palabras.slice(0, mejorCorte).join(' '), palabras.slice(mejorCorte).join(' ')];
+}
+
+// Texto SVG que nunca se sale de 'anchoMax': si ya cabe tal cual, se deja
+// igual (no se estira); si no cabe, se comprime con textLength -- nunca se
+// trunca ni se recorta a ciegas.
+function textoAjustado(h, txt, x, y, fontSize, weight, anchoMax, extra) {
+  const medido = medirAncho(txt, fontSize, weight);
+  const props = Object.assign({ x, y, textAnchor: 'middle', fill: '#FFFFFF',
+                               fontSize, fontWeight: weight, pointerEvents: 'none' }, extra || {});
+  if (medido > anchoMax) {
+    props.textLength = anchoMax;
+    props.lengthAdjust = 'spacingAndGlyphs';
+  }
+  return h('text', props, txt);
+}
+
 function Nodo(props) {
   const h = React.createElement;
   const { x, y, width, height: hgt, color, name, etiqueta, clicable } = props;
-  const cabe = width > 90 && hgt > 34;
+  const PAD = 5;
+  const anchoDisp = Math.max(width - PAD * 2, 0);
+  // Piso absoluto: una caja mas chica que esto no alcanza ni para una letra
+  // legible -- debajo de eso solo se dibuja el color, sin texto (nada de
+  // texto saliendose de un cuadro microscopico).
+  const cabeAlgo = width >= 22 && hgt >= 14;
+  if (!cabeAlgo) {
+    return h('g', {
+      onClick: clicable ? () => irA(path.concat([name])) : undefined,
+      style: { cursor: clicable ? 'pointer' : 'default' },
+    }, h('rect', { x, y, width, height: hgt, fill: color, stroke: '#FFFFFF', strokeWidth: 2, rx: 4 }));
+  }
+
+  // Tamaño de letra proporcional a la caja (nunca fijo), con piso de 7px
+  // (menos que eso ya no se alcanza a leer) y techo de 11px.
+  const fs = Math.max(7, Math.min(11, hgt / 4, width / 7));
+  // Si el nombre completo ya cabe en 1 renglon a ese tamaño, se deja en 1 --
+  // partirlo en 2 sin necesidad se ve raro en cajas anchas y cortas.
+  const cabeEn1 = medirAncho(name, fs, 600) <= anchoDisp;
+  const [linea1, linea2] = cabeEn1 ? [name, ''] : partirNombre(name);
+  const dosLineas = !cabeEn1 && linea2 !== '';
+  const centroY = y + hgt / 2;
+
+  // La cifra solo se muestra si, DESPUES del nombre (1 o 2 renglones), sigue
+  // sobrando suficiente alto -- si no, se omite antes que encimarse con el
+  // nombre.
+  const altoNombre = (dosLineas ? 2 : 1) * (fs + 2);
+  const cabeEtiqueta = (hgt - altoNombre) > 16 && width > 50;
+
+  const yNombre = dosLineas
+    ? centroY - fs * 0.7 - (cabeEtiqueta ? 6 : 0)
+    : centroY - (cabeEtiqueta ? fs * 0.7 : 0);
+  const yLinea2 = yNombre + fs + 2;
+  const yEtiqueta = (dosLineas ? yLinea2 : yNombre) + fs + 3;
+
   return h('g', {
     onClick: clicable ? () => irA(path.concat([name])) : undefined,
     style: { cursor: clicable ? 'pointer' : 'default' },
   },
     h('rect', { x, y, width, height: hgt, fill: color, stroke: '#FFFFFF', strokeWidth: 2, rx: 4 }),
-    cabe ? h('text', { x: x + width / 2, y: y + hgt / 2 - 7, textAnchor: 'middle',
-                      fill: '#FFFFFF', fontSize: 11, fontWeight: 600, pointerEvents: 'none' }, name) : null,
-    (cabe && hgt > 50) ? h('text', { x: x + width / 2, y: y + hgt / 2 + 8, textAnchor: 'middle',
-                      fill: '#FFFFFF', fontSize: 10, opacity: 0.9, pointerEvents: 'none' }, etiqueta) : null
+    textoAjustado(h, linea1, x + width / 2, yNombre, fs, 600, anchoDisp),
+    dosLineas ? textoAjustado(h, linea2, x + width / 2, yLinea2, fs, 600, anchoDisp) : null,
+    cabeEtiqueta ? textoAjustado(h, etiqueta, x + width / 2, yEtiqueta, 10, 400, anchoDisp,
+                                 { opacity: 0.9 }) : null
   );
 }
 
