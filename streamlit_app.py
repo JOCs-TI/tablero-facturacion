@@ -66,17 +66,15 @@ def color_for(i):
 def fmt(v):
     if v is None or (isinstance(v, float) and pd.isna(v)):
         return "—"
+    v = v + 0.0  # normaliza -0.0 a 0.0 (si no, ":,.0f" imprime "-0")
     return f"-${-v:,.0f}" if v < 0 else f"${v:,.0f}"
 
-def fmt_m(v):
-    if v is None or (isinstance(v, float) and pd.isna(v)):
-        return "—"
-    signo, a = ("-" if v < 0 else ""), abs(v)
-    if a >= 1e6:
-        return f"{signo}${a/1e6:,.1f}M"
-    if a >= 1e3:
-        return f"{signo}${a/1e3:,.0f}k"
-    return f"{signo}${a:,.0f}"
+# A pedido del usuario (2026-10-14) ya no se abrevia ningún monto en el
+# tablero ("quita el redondeo de cifras" en todo el tablero, no solo en una
+# tabla) -- fmt_m() se deja como alias de fmt() en vez de duplicar su lógica,
+# así que cualquier helper que use 'formateador=fmt_m' por default también
+# queda exacto automáticamente.
+fmt_m = fmt
 
 def pct(v):
     if v is None or (isinstance(v, float) and pd.isna(v)):
@@ -127,10 +125,7 @@ RECHARTS_CDN = """
 RECHARTS_FMT_JS = """
 function fmtMoney(v) {
   const s = v < 0 ? '-' : '';
-  const a = Math.abs(v);
-  if (a >= 1e6) return s + '$' + (a / 1e6).toFixed(1) + 'M';
-  if (a >= 1e3) return s + '$' + Math.round(a / 1e3) + 'k';
-  return s + '$' + Math.round(a).toLocaleString('en-US');
+  return s + '$' + Math.round(Math.abs(v)).toLocaleString('en-US');
 }
 """
 
@@ -138,7 +133,8 @@ def recharts_component(render_js, data, height=400):
     """Incrusta un chart de Recharts. 'render_js' arma el arbol de elementos con
     React.createElement y lo monta con ReactDOM.createRoot(...).render(...); tiene
     disponibles 'data' (ya inyectada como JSON), 'Recharts', 'React', 'ReactDOM'
-    y 'fmtMoney' (abrevia $1.2M / $340k, igual que fmt_m() del lado Python)."""
+    y 'fmtMoney' (monto exacto con separador de miles, igual que fmt()/fmt_m()
+    del lado Python -- sin abreviar a M/k)."""
     html = f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">{RECHARTS_CDN}
 <style>body{{margin:0;font-family:system-ui,'Segoe UI',Roboto,sans-serif;}}</style>
@@ -235,6 +231,65 @@ root.render(
       ),
       h(Line, {{ yAxisId: 'der', type: 'monotone', dataKey: 'acumulado', stroke: '{C_MARGEN}',
                 strokeWidth: 2.5, dot: {{ r: 4, fill: '{C_MARGEN}' }}, isAnimationActive: false }})
+    )
+  )
+);
+"""
+    recharts_component(render_js, data, height=height)
+
+def waterfall_recharts(df_in, label_col, valor_col, color_pos, color_neg, color_total,
+                       total_label="TOTAL", height=380):
+    """Version Recharts de waterfall_chart(): misma logica de inicio/fin acumulado,
+    pero como BarChart de Recharts con barras 'flotantes' (dataKey=[low,high] +
+    'shape' a la medida para colorear) -- la tecnica que documenta Recharts para
+    graficas de cascada."""
+    df = df_in[[label_col, valor_col]].copy()
+    df.columns = ["label", "valor"]
+    total = df["valor"].sum()
+    df = pd.concat([df, pd.DataFrame({"label": [total_label], "valor": [total]})], ignore_index=True)
+    acumulado, inicio = 0.0, []
+    for i, v in enumerate(df["valor"]):
+        if i == len(df) - 1:
+            inicio.append(0.0)
+        else:
+            inicio.append(acumulado)
+            acumulado += v
+    df["inicio"] = inicio
+    df["fin"] = df["inicio"] + df["valor"]
+    df["tipo"] = ["Total" if l == total_label else ("Resta" if v < 0 else "Suma")
+                 for l, v in zip(df["label"], df["valor"])]
+    df["etiqueta"] = df["valor"].map(fmt_m)
+
+    data = [
+        {"label": r.label, "range": [min(r.inicio, r.fin), max(r.inicio, r.fin)],
+         "valor": r.valor, "tipo": r.tipo, "etiqueta": r.etiqueta}
+        for r in df.itertuples()
+    ]
+    colores = json.dumps({"Suma": color_pos, "Resta": color_neg, "Total": color_total})
+
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList }} = Recharts;
+const COLORES = {colores};
+
+function CustomBar(props) {{
+  const {{ x, y, width, height, payload }} = props;
+  return h('rect', {{ x, y, width, height, fill: COLORES[payload.tipo], rx: 3, ry: 3 }});
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {height - 20} }},
+    h(BarChart, {{ data: data, margin: {{ top: 28, right: 20, left: 10, bottom: 10 }} }},
+      h(CartesianGrid, {{ strokeDasharray: '3 3', vertical: false }}),
+      h(XAxis, {{ dataKey: 'label', tick: {{ fontSize: 11, fill: '#54616f' }},
+                 axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
+                 axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(Tooltip, {{ formatter: (v, n, p) => [p.payload.etiqueta, p.payload.label] }}),
+      h(Bar, {{ dataKey: 'range', shape: CustomBar, isAnimationActive: false }},
+        h(LabelList, {{ dataKey: 'etiqueta', position: 'top', fontSize: 11, fill: '#3d4752' }})
+      )
     )
   )
 );
@@ -1033,6 +1088,29 @@ if pagina == "Utilidad Operativa":
                       ("Recibidas", "#7b241c", "recibida_visual")],
             egreso_col="egreso", utilidad_col="utilidad", height=440,
         )
+
+        st.divider()
+        st.subheader("Cascada de Utilidad Operativa")
+        aduana_cascada_sel = st.selectbox(
+            "Aduana", ["Todas"] + aduanas_uo, key="aduana_cascada_uo")
+        if aduana_cascada_sel == "Todas":
+            tot_cascada = uo_ad[["HONORARIOS AA", "SUELDOS", "ctos_referencia",
+                                 "ingreso", "egreso"]].sum()
+        else:
+            tot_cascada = uo_ad.loc[aduana_cascada_sel, ["HONORARIOS AA", "SUELDOS",
+                                                          "ctos_referencia", "ingreso", "egreso"]]
+        # "Ingresos"/"Recibidas" se leen de ingreso/egreso (ya con el ajuste de
+        # IMILE LAREDO sumado) menos su componente que ya va en otra barra -- así
+        # el total de la cascada cuadra con la utilidad de la aduana (o de todas).
+        df_cascada_uo = pd.DataFrame({
+            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Costos de Referencia", "Recibidas"],
+            "valor": [tot_cascada["ingreso"] - tot_cascada["HONORARIOS AA"], tot_cascada["HONORARIOS AA"],
+                     -tot_cascada["SUELDOS"], -tot_cascada["ctos_referencia"],
+                     -(tot_cascada["egreso"] - tot_cascada["SUELDOS"] - tot_cascada["ctos_referencia"])],
+        })
+        waterfall_recharts(df_cascada_uo, "label", "valor",
+                          color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
+                          total_label="Utilidad Operativa", height=400)
 
         bc1, bc2 = st.columns([1.6, 1])
         with bc1:
