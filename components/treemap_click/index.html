@@ -101,19 +101,31 @@ function pintar() {
   const migas = [{ etiqueta: 'Aduanas', p: [] }].concat(
     path.map((nombre, i) => ({ etiqueta: nombre, p: path.slice(0, i + 1) }))
   );
+  const botonRegresar = path.length > 0
+    ? h('button', {
+        onClick: () => irA(path.slice(0, -1)),
+        style: { display: 'flex', alignItems: 'center', gap: 4, fontSize: 12,
+                fontFamily: 'inherit', color: '#244072', background: '#eef1f5',
+                border: '1px solid #d7dce1', borderRadius: 5, padding: '3px 9px',
+                cursor: 'pointer', marginRight: 8 },
+      }, '← Regresar')
+    : null;
   const breadcrumb = h('div', {
     style: { display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center',
-            fontSize: 12, color: '#54616f', marginBottom: 6, minHeight: 18 },
-  }, migas.map((m, i) => h(React.Fragment, { key: i },
-    i > 0 ? h('span', { style: { color: '#b7c0c9' } }, '›') : null,
-    h('span', {
-      onClick: i === migas.length - 1 ? undefined : () => irA(m.p),
-      style: { cursor: i === migas.length - 1 ? 'default' : 'pointer',
-              fontWeight: i === migas.length - 1 ? 700 : 400,
-              color: i === migas.length - 1 ? '#244072' : '#54616f',
-              textDecoration: i === migas.length - 1 ? 'none' : 'underline' },
-    }, m.etiqueta)
-  )));
+            fontSize: 12, color: '#54616f', marginBottom: 6, minHeight: 24 },
+  },
+    botonRegresar,
+    migas.map((m, i) => h(React.Fragment, { key: i },
+      i > 0 ? h('span', { style: { color: '#b7c0c9' } }, '›') : null,
+      h('span', {
+        onClick: i === migas.length - 1 ? undefined : () => irA(m.p),
+        style: { cursor: i === migas.length - 1 ? 'default' : 'pointer',
+                fontWeight: i === migas.length - 1 ? 700 : 400,
+                color: i === migas.length - 1 ? '#244072' : '#54616f',
+                textDecoration: i === migas.length - 1 ? 'none' : 'underline' },
+      }, m.etiqueta)
+    ))
+  );
 
   if (!mounted) {
     window.__root = ReactDOM.createRoot(document.getElementById('root'));
