@@ -214,6 +214,24 @@ def nested_donut_recharts(monto_facturado, monto_no_facturado, por_categoria, he
                {"nombre": "No Facturado", "valor": float(monto_no_facturado), "color": color_no_fact}]
     data_ext = [{"nombre": str(k), "valor": float(v), "color": color_for(i)}
                for i, (k, v) in enumerate(por_categoria.items())]
+    # Piso visual (mismo patron que la dona de Gastos por Concepto, en Altair):
+    # con muchos proveedores chicos, su rebanada real es una tira invisible --
+    # se infla a un piso de angulo (3% del circulo) quitandoselo
+    # proporcionalmente a las grandes, solo para el DIBUJO ('valorAngulo'); el
+    # monto real ('valor', el que lee el tooltip) no cambia.
+    PISO_FRAC_EXT = 0.03
+    tot_ext = sum(d["valor"] for d in data_ext) or 1.0
+    es_chica = [d["valor"] / tot_ext < PISO_FRAC_EXT for d in data_ext]
+    n_chicas = sum(es_chica)
+    if 0 < n_chicas < len(data_ext) and n_chicas * PISO_FRAC_EXT < 1:
+        presupuesto_chicas = n_chicas * PISO_FRAC_EXT
+        suma_grandes = sum(d["valor"] for d, chica in zip(data_ext, es_chica) if not chica)
+        escala = (1 - presupuesto_chicas) * tot_ext / suma_grandes if suma_grandes else 1
+        for d, chica in zip(data_ext, es_chica):
+            d["valorAngulo"] = (PISO_FRAC_EXT * tot_ext) if chica else d["valor"] * escala
+    else:
+        for d in data_ext:
+            d["valorAngulo"] = d["valor"]
     render_js = f"""
 const h = React.createElement;
 const {{ ResponsiveContainer, PieChart, Pie, Cell, Tooltip }} = Recharts;
@@ -251,7 +269,7 @@ root.render(
                  innerRadius: 0, outerRadius: 70, isAnimationActive: false }},
           dataInt.map((d, i) => h(Cell, {{ key: i, fill: d.color }}))
         ),
-        h(Pie, {{ data: dataExt, dataKey: 'valor', nameKey: 'nombre', cx: '50%', cy: '50%',
+        h(Pie, {{ data: dataExt, dataKey: 'valorAngulo', nameKey: 'nombre', cx: '50%', cy: '50%',
                  innerRadius: 85, outerRadius: 130, isAnimationActive: false }},
           dataExt.map((d, i) => h(Cell, {{ key: i, fill: d.color }}))
         )
