@@ -1298,38 +1298,23 @@ if pagina == "Gastos por Concepto":
         "orden": range(len(dona)),
     })
     # Rebanada minima: una rebanada de <1% practicamente no se ve (ni cabe su %
-    # adentro) -- se le da un piso de angulo quitandoselo proporcionalmente a las
-    # demas, nada mas para el DIBUJO (theta); el monto y el % reales (tooltip,
-    # leyenda, texto) no cambian, solo el tamaño del gajo.
-    # Antes el piso era un valor FIJO (3% para cualquier chica) -- una rebanada
-    # de 0.2% y una de 2% quedaban del mismo tamaño en el dibujo, indistinguibles
-    # ("no me gusta que todas las pequeñas se vean del mismo tamaño"). Ahora se
-    # interpola entre un mínimo visible (PISO_MIN) y el propio umbral (PISO_FRAC)
-    # según qué tan chica es cada una -- conserva el orden relativo entre ellas.
+    # adentro) -- se le da un piso de angulo (aqui 3% del circulo) quitandoselo
+    # proporcionalmente a las demas, nada mas para el DIBUJO (theta); el monto y
+    # el % reales (tooltip, leyenda, texto) no cambian, solo el tamaño del gajo.
     PISO_FRAC = 0.03
-    PISO_MIN = 0.008
     chicas = df_dona["pct"] < PISO_FRAC
-    if chicas.any() and not chicas.all():
-        theta_chicas = PISO_MIN + (df_dona.loc[chicas, "pct"] / PISO_FRAC) * (PISO_FRAC - PISO_MIN)
-        presupuesto_chicas = theta_chicas.sum()
-        if presupuesto_chicas < 1:
-            suma_grandes = df_dona.loc[~chicas, "pct"].sum()
-            escala = (1 - presupuesto_chicas) / suma_grandes if suma_grandes else 1
-            df_dona["theta_val"] = df_dona["pct"] * escala
-            df_dona.loc[chicas, "theta_val"] = theta_chicas
-        else:
-            df_dona["theta_val"] = df_dona["pct"]
+    if chicas.any() and not chicas.all() and chicas.sum() * PISO_FRAC < 1:
+        presupuesto_chicas = chicas.sum() * PISO_FRAC
+        suma_grandes = df_dona.loc[~chicas, "pct"].sum()
+        escala = (1 - presupuesto_chicas) / suma_grandes if suma_grandes else 1
+        df_dona["theta_val"] = df_dona["pct"].where(chicas, df_dona["pct"] * escala)
+        df_dona.loc[chicas, "theta_val"] = PISO_FRAC
     else:
         df_dona["theta_val"] = df_dona["pct"]
     # Con el piso de arriba, una rebanada de 0.4% ya se ve -- pero ".0%" la
     # redondearia a "0%", que contradice que se vea un gajo ahi. Un decimal
     # para las chicas, entero para el resto (como ya se via antes).
     df_dona["pct_etq"] = df_dona["pct"].map(lambda p: f"{p*100:.1f}%" if p < 0.01 else f"{p*100:.0f}%")
-    # Con el piso ya NO fijo (arriba), las rebanadas mas angostas (<0.6%) quedan
-    # muy delgadas para su propio texto -- se encima con la de al lado. El dato
-    # exacto ya esta en la leyenda, asi que el texto adentro se omite ahi (el
-    # color del gajo se mantiene, diferenciado, solo no lleva numero encima).
-    df_dona.loc[df_dona["pct"] < 0.006, "pct_etq"] = ""
     r_out, r_in = 300, 160
     arcos = alt.Chart(df_dona).mark_arc(innerRadius=r_in, outerRadius=r_out,
                                         stroke="#FFFFFF", strokeWidth=2).encode(
