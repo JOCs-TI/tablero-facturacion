@@ -198,15 +198,31 @@ def pareto_recharts(serie, color, height=420, umbral=0.8, color_neg=None):
     df = df.assign(_orden=orden_col).sort_values("_orden", ascending=False).drop(columns="_orden")
     valores_acum = df["valor"].clip(lower=0) if color_neg is not None else df["valor"]
     tot = valores_acum.sum() or 1.0
-    df["acumulado"] = valores_acum.cumsum() / tot
+    df["acumulado_monto"] = valores_acum.cumsum()
+    df["acumulado"] = df["acumulado_monto"] / tot
     df["etiqueta"] = df["valor"].map(fmt_m)
     df["color"] = color if color_neg is None else df["valor"].map(lambda v: color if v >= 0 else color_neg)
     data = [{"label": str(r.label), "valor": float(r.valor), "etiqueta": r.etiqueta,
-             "acumulado": float(r.acumulado), "color": r.color} for r in df.itertuples()]
+             "acumulado": float(r.acumulado), "acumulado_monto": float(r.acumulado_monto),
+             "color": r.color} for r in df.itertuples()]
     render_js = f"""
 const h = React.createElement;
 const {{ ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
          LabelList, ReferenceLine, Cell }} = Recharts;
+
+function TooltipPareto(props) {{
+  const {{ active, payload, label }} = props;
+  if (!active || !payload || !payload.length) return null;
+  const fila = payload[0].payload;
+  return h('div', {{ style: {{ background: '#fff', border: '1px solid #d7dce1',
+                             borderRadius: 6, padding: '8px 12px', fontSize: 13 }} }},
+    h('div', {{ style: {{ fontWeight: 700, marginBottom: 4, color: '{JOCS_AZUL}' }} }}, label),
+    h('div', {{}}, 'Monto : ' + fmtMoney(fila.valor)),
+    h('div', {{}}, 'Monto acumulado : ' + fmtMoney(fila.acumulado_monto)),
+    h('div', {{}}, '% acumulado : ' + Math.round(fila.acumulado * 100) + '%')
+  );
+}}
+
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(
   h(ResponsiveContainer, {{ width: '100%', height: {height - 10} }},
@@ -219,11 +235,7 @@ root.render(
       h(YAxis, {{ yAxisId: 'der', orientation: 'right', domain: [0, 1.05],
                  tickFormatter: v => Math.round(v * 100) + '%',
                  tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(Tooltip, {{ formatter: (value, name) => {{
-        if (name === 'valor') return [fmtMoney(value), 'Monto'];
-        if (name === 'acumulado') return [Math.round(value * 100) + '%', '% acumulado'];
-        return [value, name];
-      }} }}),
+      h(Tooltip, {{ content: h(TooltipPareto) }}),
       h(ReferenceLine, {{ yAxisId: 'der', y: {umbral}, stroke: '{C_NEG}', strokeDasharray: '4 3' }}),
       h(Bar, {{ yAxisId: 'izq', dataKey: 'valor', radius: [3, 3, 0, 0], isAnimationActive: false }},
         data.map((d, i) => h(Cell, {{ key: i, fill: d.color }})),
