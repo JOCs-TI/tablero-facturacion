@@ -205,6 +205,19 @@ def pareto_recharts(serie, color, height=420, umbral=0.8, color_neg=None):
     data = [{"label": str(r.label), "valor": float(r.valor), "etiqueta": r.etiqueta,
              "acumulado": float(r.acumulado), "acumulado_monto": float(r.acumulado_monto),
              "color": r.color} for r in df.itertuples()]
+    # Los dos ejes Y (montos a la izquierda, % acumulado a la derecha) no
+    # comparten "0" solos -- cada uno escala a su propio rango completo, así que
+    # sin esto el "0%" de la derecha cae en el PISO del plot, no a la altura del
+    # "$0" de la izquierda (que puede estar a la mitad si hay barras negativas).
+    # El punto ámbar de la primera aduana termina viéndose "abajo", lejos de su
+    # propia barra azul. Fix: se calcula a mano el dominio del eje derecho para
+    # que su "0" quede exactamente a la misma altura que el "$0" del eje
+    # izquierdo (mismo truco que alinear dos ejes Y en cualquier combo chart).
+    techo_pos = max(float(df["valor"].max()), 0.0) * 1.15 or 1.0
+    techo_neg = min(float(df["valor"].min()), 0.0) * 1.15
+    frac_cero = (0.0 - techo_neg) / (techo_pos - techo_neg) if techo_pos != techo_neg else 0.0
+    r_max = 1.05
+    r_min = (frac_cero * r_max / (frac_cero - 1.0)) if 0.0 <= frac_cero < 1.0 else 0.0
     render_js = f"""
 const h = React.createElement;
 const {{ ResponsiveContainer, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -230,9 +243,9 @@ root.render(
       h(CartesianGrid, {{ strokeDasharray: '3 3', vertical: false }}),
       h(XAxis, {{ dataKey: 'label', angle: -30, textAnchor: 'end', interval: 0,
                  tick: {{ fontSize: 10, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(YAxis, {{ yAxisId: 'izq', tickFormatter: fmtMoney, tick: {{ fontSize: 11, fill: '#54616f' }},
-                 axisLine: {{ stroke: '#d7dce1' }} }}),
-      h(YAxis, {{ yAxisId: 'der', orientation: 'right', domain: [0, 1.05],
+      h(YAxis, {{ yAxisId: 'izq', domain: [{techo_neg}, {techo_pos}], tickFormatter: fmtMoney,
+                 tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ yAxisId: 'der', orientation: 'right', domain: [{r_min}, {r_max}],
                  tickFormatter: v => Math.round(v * 100) + '%',
                  tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
       h(Tooltip, {{ content: h(TooltipPareto) }}),
