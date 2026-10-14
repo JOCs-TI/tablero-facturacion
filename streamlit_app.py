@@ -207,7 +207,7 @@ def gauge_svg(frac, height=200, bandas=None, etiqueta="del gasto facturado"):
     # iframe de components.html, y el iframe recorta lo que sobra -- con
     # tamaño fijo ambos quedan sincronizados siempre.
     svg = f"""<svg viewBox="0 0 260 195" width="280" height="210"
-                   xmlns="http://www.w3.org/2000/svg" style="display:block;margin:0 auto;">
+                   xmlns="http://www.w3.org/2000/svg">
       {"".join(piezas)}
       <line x1="{cx}" y1="{cy}" x2="{xa:.2f}" y2="{ya:.2f}" stroke="{JOCS_AZUL}"
             stroke-width="4" stroke-linecap="round" />
@@ -217,7 +217,12 @@ def gauge_svg(frac, height=200, bandas=None, etiqueta="del gasto facturado"):
       <text x="{cx}" y="{cy + 52}" text-anchor="middle" font-size="12" fill="#54616f"
             font-family="{fuente}">{etiqueta}</text>
     </svg>"""
-    components.html(f'<div style="font-family:{fuente};">{svg}</div>', height=height)
+    # 'margin:0 auto' en el propio <svg> no lo centraba de forma confiable
+    # (un SVG no siempre se comporta como bloque para ese truco) -- flexbox
+    # en el contenedor sí centra siempre, sea cual sea el ancho de la columna.
+    components.html(
+        f'<div style="font-family:{fuente};display:flex;justify-content:center;">{svg}</div>',
+        height=height)
 
 def nested_donut_recharts(monto_facturado, monto_no_facturado, por_categoria, height=380,
                           color_fact=JOCS_AZUL, color_no_fact=C_NEG):
