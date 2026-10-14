@@ -1478,8 +1478,19 @@ if pagina == "Gastos por Concepto":
         st.info("Sin gasto recibido en el periodo seleccionado.")
         st.stop()
 
-    aduana_sel = st.selectbox("Aduana", gasto_ad.index.tolist(), index=0,
-                              format_func=lambda a: f"{a}  ·  {fmt_m(gasto_ad[a])}")
+    # Sin 'key' fijo, Streamlit arma uno distinto cada vez que la lista de
+    # 'options' cambia (pasa al alternar Gasto/Ingreso, cada modo ordena las
+    # aduanas distinto) -- eso hacia que perdiera la aduana elegida y volviera
+    # siempre a la primera. Con 'key' fijo y sin forzar 'index', Streamlit
+    # conserva el VALOR elegido entre reruns mientras siga existiendo en la
+    # nueva lista de opciones (si una aduana solo existe en un modo, se
+    # descarta la selección vieja en vez de arriesgar un error).
+    if ("gc_aduana_sel" in st.session_state
+            and st.session_state.gc_aduana_sel not in gasto_ad.index):
+        del st.session_state.gc_aduana_sel
+    aduana_sel = st.selectbox("Aduana", gasto_ad.index.tolist(),
+                              format_func=lambda a: f"{a}  ·  {fmt_m(gasto_ad[a])}",
+                              key="gc_aduana_sel")
     top_n = 8
 
     r = r_all[r_all["aduana"] == aduana_sel]
