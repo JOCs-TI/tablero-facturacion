@@ -1049,7 +1049,7 @@ if pagina == "Utilidad Operativa":
         pareto_recharts(uo_ad["utilidad"], JOCS_AZUL, color_neg=C_NEG, height=420)
 
     st.divider()
-    st.subheader("Honorarios y Referencias")
+    st.subheader("Honorarios AA y Referencias")
     col_izq, col_der = st.columns(2)
     with col_izq:
         st.markdown("**Honorarios de Josefa**")
