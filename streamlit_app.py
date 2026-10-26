@@ -1331,7 +1331,7 @@ with st.sidebar:
     st.caption("TABLEROS")
     pagina = st.radio(
         "",
-        ["Utilidad Operativa", "Gastos por Concepto", "Nómina", "Tarjeta de Crédito"],
+        ["Utilidad Operativa", "Gastos", "Ingresos", "Nómina", "Tarjeta de Crédito"],
         label_visibility="collapsed",
         key="nav",
     )
@@ -1441,6 +1441,152 @@ cobertura_concepto = (REC.loc[REC["concepto_cierre"].notna(), "importe"].sum() /
 sm = dff[~dff["cancelada"] & dff["sin_monto"]]
 n_sin_monto = len(sm)
 importe_sin_monto = sm["importe_sin_monto"].sum()
+
+def dona_concepto_altair(serie_pos, titulo_concepto, total_txt, subtitulo_txt, top_n=6):
+    """Dona de composicion por concepto -- mismo patron ya probado en la pagina
+    de Gastos original (Altair, no Recharts: ver nota junto a esa dona), con
+    los chicos (<top_n) agrupados en 'Otros'."""
+    dona = serie_pos.head(top_n)
+    if len(serie_pos) > top_n:
+        dona = pd.concat([dona, pd.Series({"Otros": serie_pos.iloc[top_n:].sum()})])
+    colores = [color_for(k) if c != "Otros" else "#c9cdd3" for k, c in enumerate(dona.index)]
+    base_pct = dona.sum() or 1.0
+    etiquetas = [f"{c}  ·  {fmt(v)}  ·  {v / base_pct * 100:.1f}%" for c, v in dona.items()]
+    df_dona = pd.DataFrame({"concepto": dona.index, "valor": dona.values, "leyenda": etiquetas,
+                            "pct": dona.values / base_pct, "orden": range(len(dona))})
+    df_dona["pct_etq"] = df_dona["pct"].map(lambda p: f"{p*100:.1f}%" if p < 0.01 else f"{p*100:.0f}%")
+    r_out, r_in = 130, 68
+    base = alt.Chart(df_dona).encode(
+        theta=alt.Theta("pct:Q", stack=True), order=alt.Order("orden:Q"),
+        color=alt.Color("leyenda:N", sort=etiquetas, scale=alt.Scale(domain=etiquetas, range=colores),
+                        legend=alt.Legend(title=None, orient="right", labelLimit=200, symbolType="circle",
+                                          labelFontSize=11)),
+        tooltip=[alt.Tooltip("concepto:N", title=titulo_concepto),
+                 alt.Tooltip("valor:Q", title="Monto", format=",.0f"),
+                 alt.Tooltip("pct:Q", title="%", format=".1%")],
+    )
+    arcos = base.mark_arc(innerRadius=r_in, outerRadius=r_out, stroke="#FFFFFF", strokeWidth=2)
+    pct_text = base.mark_text(radius=(r_in + r_out) / 2, fontSize=12, color="#FFFFFF").encode(text="pct_etq:N")
+    centro1 = alt.Chart(pd.DataFrame({"t": [total_txt]})).mark_text(
+        fontSize=15, fontWeight=700, color=JOCS_AZUL, dy=-6).encode(text="t:N")
+    centro2 = alt.Chart(pd.DataFrame({"t": [subtitulo_txt]})).mark_text(
+        fontSize=11, color="#54616f", dy=10).encode(text="t:N")
+    st.altair_chart(tema((arcos + pct_text + centro1 + centro2).properties(height=320)),
+                    use_container_width=True)
+    return dona
+
+def pagina_analisis_flujo(es_ingreso):
+    """Pagina 'Analisis de Ingresos'/'Analisis de Gastos' (mockup del usuario,
+    2026-10-26): KPIs del mes vs. presupuesto, resumen por aduana, composicion
+    por concepto y principales contrapartes (clientes/proveedores). El mockup
+    tambien pide evolucion mensual, tendencia y comparativos contra el mes/año
+    anterior -- eso necesita historico real de mas de un mes, que hoy no
+    existe (mismo limite que en Utilidad Operativa, ver [[Pestaña 1]] mas
+    arriba); se deja marcado como pendiente en vez de inventar cifras."""
+    etq_titulo = "Ingresos" if es_ingreso else "Gastos"
+    etq_sing = "Ingreso" if es_ingreso else "Gasto"
+    base_df = EM if es_ingreso else REC
+    color_real = C_EMITIDA if es_ingreso else C_RECIBIDA
+    etq_contraparte = "Clientes" if es_ingreso else "Proveedores"
+    etq_contraparte_sing = "Cliente" if es_ingreso else "Proveedor"
+    ppto_key = "ingresos" if es_ingreso else "gastos"
+
+    st.title(f"Análisis de {etq_titulo}")
+    st.caption(f"Comportamiento, composición y principales "
+              f"{'generadores de ingresos' if es_ingreso else 'proveedores de gastos'} · "
+              f"{', '.join(sel_labels)}" + (" · Solo PROPIOS" if SOLO_PROPIOS else ""))
+
+    if base_df.empty:
+        st.info(f"Sin {etq_titulo.lower()} para el periodo y aduana seleccionados.")
+        return
+
+    tot_mes = float(base_df["importe"].sum())
+    n_contrapartes = base_df.loc[base_df["importe"] != 0, "contraparte"].nunique()
+
+    ppto_mensual, _, mes_ppto = load_presupuesto()
+    tiene_ppto = bool(ppto_mensual)
+    ppto_mes_tot = float(sum(ppto_mensual.get(ppto_key, {}).values())) if tiene_ppto else None
+    cumplimiento = tot_mes / ppto_mes_tot if ppto_mes_tot else None
+
+    st.divider()
+    cA, cB, cC, cD = st.columns(4)
+    cA.metric(f"{etq_sing} del mes", fmt(tot_mes))
+    if ppto_mes_tot:
+        cB.metric("Presupuesto del mes", fmt(ppto_mes_tot),
+                 delta=f"{cumplimiento * 100:.0f}% de cumplimiento" if cumplimiento is not None else None,
+                 delta_color="off")
+    else:
+        cB.metric("Presupuesto del mes", "No disponible")
+    cC.metric(f"{etq_contraparte} activos", f"{n_contrapartes:,}")
+    cD.metric("Resultado operativo", fmt(MARGEN),
+             delta=f"Margen {MARGEN_PCT * 100:.1f}%" if MARGEN_PCT is not None else None, delta_color="off")
+    st.caption("Acumulado, comparativo contra el mes/año anterior y evolución mensual pendientes de "
+              "cargar histórico real mes a mes (hoy solo hay un mes de datos reales en vivo).")
+
+    st.divider()
+    st.subheader("Resumen por Aduana")
+    aduanas_disp = sorted(base_df["aduana"].dropna().unique().tolist())
+    if not aduanas_disp:
+        st.info("Sin aduanas con actividad.")
+    else:
+        aduana_resumen_sel = st.selectbox("Aduana", aduanas_disp, key=f"resumen_aduana_{etq_sing}")
+        base_aduana = base_df[base_df["aduana"] == aduana_resumen_sel]
+        tot_aduana = float(base_aduana["importe"].sum())
+        ra1, ra2 = st.columns(2)
+        ra1.metric(f"{etq_sing} total del mes", fmt(tot_aduana),
+                  delta=f"{tot_aduana / tot_mes * 100:.1f}% del total" if tot_mes else None, delta_color="off")
+        ra2.metric("Número de operaciones", f"{len(base_aduana):,}")
+
+    st.divider()
+    st.subheader(f"Composición de {etq_titulo.lower()} por concepto")
+    if es_ingreso:
+        campo_concepto = "descripcion"
+        st.caption("Emitidas no trae una categoría de cierre como Recibidas; se agrupa por "
+                  "**Descripción** de la línea en su lugar.")
+    else:
+        campo_concepto = "concepto_cierre"
+        if cobertura_concepto < 0.95:
+            st.caption(f"Solo el **{cobertura_concepto * 100:.0f}%** del gasto trae un concepto de "
+                      "cierre asignado en el Excel de origen; el resto aparece como 'Sin categorizar'.")
+    conc = base_df.copy()
+    conc[campo_concepto] = conc[campo_concepto].fillna("Sin categorizar")
+    por_concepto = conc.groupby(campo_concepto)["importe"].sum()
+    por_concepto_pos = por_concepto[por_concepto > 0].sort_values(ascending=False)
+    if por_concepto_pos.empty:
+        st.info("Sin conceptos para mostrar.")
+    else:
+        col_dona, col_tabla = st.columns([1.1, 1])
+        with col_dona:
+            dona = dona_concepto_altair(por_concepto_pos, "Concepto", fmt_m(tot_mes),
+                                        f"{etq_sing} total")
+        with col_tabla:
+            tabla_concepto = por_concepto_pos.reset_index()
+            tabla_concepto.columns = ["Concepto", "Monto"]
+            tabla_concepto["% Part."] = (tabla_concepto["Monto"] / por_concepto_pos.sum()).map(pct)
+            tabla_concepto["Monto"] = tabla_concepto["Monto"].map(fmt)
+            st.dataframe(tabla_concepto, use_container_width=True, hide_index=True, height=420)
+
+    st.divider()
+    st.subheader(f"Principales {etq_contraparte.lower()} por {etq_sing.lower()}")
+    por_contraparte = base_df.groupby("contraparte")["importe"].sum()
+    por_contraparte = por_contraparte[por_contraparte > 0].sort_values(ascending=False)
+    if por_contraparte.empty:
+        st.info(f"Sin {etq_contraparte.lower()} identificados.")
+    else:
+        tot_cp = float(por_contraparte.sum())
+        top10 = por_contraparte.head(10)
+        if len(por_contraparte) > 10:
+            top10 = pd.concat([top10, pd.Series({"Otros": por_contraparte.iloc[10:].sum()})])
+        bar_h_recharts(top10, color_real, height=max(320, 34 * len(top10) + 40))
+
+        st.subheader("Concentración")
+        top5_pct = por_contraparte.head(5).sum() / tot_cp
+        top10_pct = por_contraparte.head(10).sum() / tot_cp
+        principal_pct = por_contraparte.iloc[0] / tot_cp
+        cc1, cc2, cc3 = st.columns(3)
+        cc1.metric(f"Top 5 {etq_contraparte.lower()}", pct(top5_pct))
+        cc2.metric(f"Top 10 {etq_contraparte.lower()}", pct(top10_pct))
+        cc3.metric(f"{etq_contraparte_sing} principal", pct(principal_pct))
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PANORAMA
@@ -1599,146 +1745,11 @@ if pagina == "Utilidad Operativa":
 # ══════════════════════════════════════════════════════════════════════════════
 # GASTOS POR CONCEPTO
 # ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Gastos por Concepto":
-    st.title("Gastos por Concepto")
-    st.caption(f"{', '.join(sel_labels)} · Distribución propia por aduana, una aduana a la vez")
+if pagina == "Gastos":
+    pagina_analisis_flujo(es_ingreso=False)
 
-    modo = st.radio("Ver", ["Gasto (Recibida)", "Ingreso (Emitida)"], horizontal=True, key="gc_modo")
-    es_ingreso = modo == "Ingreso (Emitida)"
-
-    if es_ingreso:
-        st.caption("Emitidas no trae una categoría de cierre como Recibidas — aquí se agrupa por "
-                   "**Descripción** de la línea en su lugar.")
-        campo_concepto, titulo_concepto = "descripcion", "Descripción"
-        titulo_plural, articulo_concepto = "Descripciones", "una"
-        r_all = EM.copy()
-        color_base = C_EMITIDA
-    else:
-        campo_concepto, titulo_concepto = "concepto_cierre", "Concepto"
-        titulo_plural, articulo_concepto = "Conceptos", "un"
-        r_all = REC.copy()
-        color_base = C_RECIBIDA
-        if cobertura_concepto < 0.95:
-            st.warning(
-                f"Solo el **{cobertura_concepto*100:.0f}%** del gasto recibido trae un concepto de "
-                f"cierre asignado en el Excel de origen; el resto aparece como **'Sin categorizar'**."
-            )
-
-    r_all[campo_concepto] = r_all[campo_concepto].fillna("Sin categorizar")
-    tot_all = r_all["importe"].sum()
-    gasto_ad = r_all.groupby("aduana")["importe"].sum().sort_values(ascending=False)
-    if gasto_ad.empty:
-        st.info("Sin gasto recibido en el periodo seleccionado.")
-        st.stop()
-
-    # Sin 'key' fijo, Streamlit arma uno distinto cada vez que la lista de
-    # 'options' cambia (pasa al alternar Gasto/Ingreso, cada modo ordena las
-    # aduanas distinto) -- eso hacia que perdiera la aduana elegida y volviera
-    # siempre a la primera. Con 'key' fijo y sin forzar 'index', Streamlit
-    # conserva el VALOR elegido entre reruns mientras siga existiendo en la
-    # nueva lista de opciones (si una aduana solo existe en un modo, se
-    # descarta la selección vieja en vez de arriesgar un error).
-    if ("gc_aduana_sel" in st.session_state
-            and st.session_state.gc_aduana_sel not in gasto_ad.index):
-        del st.session_state.gc_aduana_sel
-    aduana_sel = st.selectbox("Aduana", gasto_ad.index.tolist(),
-                              format_func=lambda a: f"{a}  ·  {fmt_m(gasto_ad[a])}",
-                              key="gc_aduana_sel")
-    top_n = 8
-
-    r = r_all[r_all["aduana"] == aduana_sel]
-    tot_gasto = r["importe"].sum()
-    por_c = r.groupby(campo_concepto)["importe"].sum().sort_values(ascending=False)
-    etq_kpi = "Ingreso" if es_ingreso else "Gasto"
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric(f"{etq_kpi} de {aduana_sel}", fmt_m(tot_gasto))
-    c2.metric(f"% del {etq_kpi.lower()} total", f"{tot_gasto / tot_all * 100:.1f}%" if tot_all else "—")
-    c3.metric(f"{titulo_plural} distintos", f"{len(por_c):,}")
-
-    st.divider()
-    st.subheader(f"{etq_kpi} por {titulo_concepto.lower()} · {aduana_sel}")
-
-    # La dona solo admite valores positivos (notas de credito quedan solo en la tabla);
-    # los conceptos fuera del top se agrupan en 'Otros conceptos'.
-    pos = por_c[por_c > 0]
-    dona = pos.head(top_n)
-    if len(pos) > top_n:
-        dona = pd.concat([dona, pd.Series({"Otros conceptos": pos.iloc[top_n:].sum()})])
-    colores, k = [], 0
-    for c in dona.index:
-        if c == "Sin categorizar":
-            colores.append(C_NEG)
-        elif c == "Otros conceptos":
-            colores.append("#c9cdd3")
-        else:
-            colores.append(color_for(k))
-            k += 1
-
-    # Etiqueta de leyenda con concepto, monto exacto y %, para leer todo sin tabla.
-    base_pct = dona.sum()
-    etiquetas = [f"{c}  ·  {fmt(v)}  ·  {v / base_pct * 100:.1f}%" for c, v in dona.items()]
-    # Esta dona se quedo en Altair (no Recharts): la version Recharts salia mal
-    # posicionada/recortada en el despliegue (el usuario pidio regresarla).
-    df_dona = pd.DataFrame({
-        "concepto": dona.index, "valor": dona.values, "leyenda": etiquetas,
-        "pct": dona.values / base_pct if base_pct else 0.0,
-        "orden": range(len(dona)),
-    })
-    # Rebanada minima: una rebanada de <1% practicamente no se ve (ni cabe su %
-    # adentro) -- se le da un piso de angulo (aqui 3% del circulo) quitandoselo
-    # proporcionalmente a las demas, nada mas para el DIBUJO (theta); el monto y
-    # el % reales (tooltip, leyenda, texto) no cambian, solo el tamaño del gajo.
-    PISO_FRAC = 0.03
-    chicas = df_dona["pct"] < PISO_FRAC
-    if chicas.any() and not chicas.all() and chicas.sum() * PISO_FRAC < 1:
-        presupuesto_chicas = chicas.sum() * PISO_FRAC
-        suma_grandes = df_dona.loc[~chicas, "pct"].sum()
-        escala = (1 - presupuesto_chicas) / suma_grandes if suma_grandes else 1
-        df_dona["theta_val"] = df_dona["pct"].where(chicas, df_dona["pct"] * escala)
-        df_dona.loc[chicas, "theta_val"] = PISO_FRAC
-    else:
-        df_dona["theta_val"] = df_dona["pct"]
-    # Con el piso de arriba, una rebanada de 0.4% ya se ve -- pero ".0%" la
-    # redondearia a "0%", que contradice que se vea un gajo ahi. Un decimal
-    # para las chicas, entero para el resto (como ya se via antes).
-    df_dona["pct_etq"] = df_dona["pct"].map(lambda p: f"{p*100:.1f}%" if p < 0.01 else f"{p*100:.0f}%")
-    r_out, r_in = 300, 160
-    arcos = alt.Chart(df_dona).mark_arc(innerRadius=r_in, outerRadius=r_out,
-                                        stroke="#FFFFFF", strokeWidth=2).encode(
-        theta=alt.Theta("theta_val:Q", stack=True),
-        order=alt.Order("orden:Q"),
-        color=alt.Color("leyenda:N", sort=etiquetas,
-                        scale=alt.Scale(domain=etiquetas, range=colores),
-                        legend=alt.Legend(title=None, orient="right", labelLimit=420,
-                                          labelFontSize=13, symbolType="circle")),
-        tooltip=[alt.Tooltip("concepto:N", title=titulo_concepto),
-                 alt.Tooltip("valor:Q", title="Monto", format=",.0f"),
-                 alt.Tooltip("pct:Q", title="%", format=".1%")],
-    )
-    pct_text = alt.Chart(df_dona).mark_text(radius=(r_in + r_out) / 2, fontSize=14,
-                                             color="#FFFFFF").encode(
-        theta=alt.Theta("theta_val:Q", stack=True), order=alt.Order("orden:Q"),
-        text="pct_etq:N",
-    )
-    centro1 = alt.Chart(pd.DataFrame({"t": [fmt_m(tot_gasto)]})).mark_text(
-        fontSize=22, fontWeight=700, color=JOCS_AZUL, dy=-8).encode(text="t:N")
-    centro2 = alt.Chart(pd.DataFrame({"t": [aduana_sel]})).mark_text(
-        fontSize=14, color="#54616f", dy=14).encode(text="t:N")
-    chart_dona = (arcos + pct_text + centro1 + centro2).properties(height=640)
-    st.altair_chart(tema(chart_dona), use_container_width=True)
-
-    st.divider()
-    etq_contraparte = "Clientes" if es_ingreso else "Proveedores"
-    st.subheader(f"{etq_contraparte} dentro de {articulo_concepto} {titulo_concepto.lower()}")
-    concepto_sel = st.selectbox(titulo_concepto, por_c.index.tolist())
-    prov = (r[r[campo_concepto] == concepto_sel]
-            .groupby("contraparte")["importe"].sum().nlargest(15).sort_values(ascending=False))
-    if len(prov):
-        bar_h_recharts(prov, color_base, height=max(280, 30 * len(prov)))
-    else:
-        demostrativo = "esta" if articulo_concepto == "una" else "este"
-        st.info(f"Sin {etq_contraparte.lower()} identificados para {demostrativo} {titulo_concepto.lower()}.")
+if pagina == "Ingresos":
+    pagina_analisis_flujo(es_ingreso=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
