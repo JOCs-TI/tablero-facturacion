@@ -1442,38 +1442,210 @@ sm = dff[~dff["cancelada"] & dff["sin_monto"]]
 n_sin_monto = len(sm)
 importe_sin_monto = sm["importe_sin_monto"].sum()
 
-def dona_concepto_altair(serie_pos, titulo_concepto, total_txt, subtitulo_txt, top_n=6):
-    """Dona de composicion por concepto -- mismo patron ya probado en la pagina
-    de Gastos original (Altair, no Recharts: ver nota junto a esa dona), con
-    los chicos (<top_n) agrupados en 'Otros'."""
-    dona = serie_pos.head(top_n)
-    if len(serie_pos) > top_n:
-        dona = pd.concat([dona, pd.Series({"Otros": serie_pos.iloc[top_n:].sum()})])
-    colores = [color_for(k) if c != "Otros" else "#c9cdd3" for k, c in enumerate(dona.index)]
-    base_pct = dona.sum() or 1.0
-    etiquetas = [f"{c}  ·  {fmt(v)}  ·  {v / base_pct * 100:.1f}%" for c, v in dona.items()]
-    df_dona = pd.DataFrame({"concepto": dona.index, "valor": dona.values, "leyenda": etiquetas,
-                            "pct": dona.values / base_pct, "orden": range(len(dona))})
-    df_dona["pct_etq"] = df_dona["pct"].map(lambda p: f"{p*100:.1f}%" if p < 0.01 else f"{p*100:.0f}%")
-    r_out, r_in = 130, 68
-    base = alt.Chart(df_dona).encode(
-        theta=alt.Theta("pct:Q", stack=True), order=alt.Order("orden:Q"),
-        color=alt.Color("leyenda:N", sort=etiquetas, scale=alt.Scale(domain=etiquetas, range=colores),
-                        legend=alt.Legend(title=None, orient="right", labelLimit=200, symbolType="circle",
-                                          labelFontSize=11)),
-        tooltip=[alt.Tooltip("concepto:N", title=titulo_concepto),
-                 alt.Tooltip("valor:Q", title="Monto", format=",.0f"),
-                 alt.Tooltip("pct:Q", title="%", format=".1%")],
+# ── Tarjetas HTML estilo "BI dashboard" (mockups 'Analisis de Gastos'/'Analisis
+# de Ingresos', 2026-10-27) ─────────────────────────────────────────────────────
+# El usuario pidio fidelidad visual exacta al mockup aunque haya que dejar de
+# usar los widgets nativos de Streamlit ("usa el lenguaje necesario para que
+# quede igual") -- cada tarjeta de abajo es su propio documento HTML/CSS (y
+# Recharts cuando hace falta grafica) incrustado via components.html(), mismo
+# mecanismo que ya se usaba para las graficas Recharts de este tablero.
+DASH_BG, DASH_CARD_BG, DASH_BORDER = "#F4F5F7", "#FFFFFF", "#E3E6EA"
+DASH_TEXT, DASH_SUBTEXT = "#1C2A3A", "#6B7280"
+DASH_POS_BG, DASH_POS_TXT = "#E6F4EA", "#1E7E34"
+DASH_NEG_BG, DASH_NEG_TXT = "#FDEAEA", "#C0392B"
+DASH_ICONOS = {"money": "💵", "target": "🎯", "people": "👥", "chart": "📊",
+               "building": "🏢", "trophy": "🏆", "box": "📦", "trend": "📈"}
+
+DASH_CSS = f"""
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; padding: 2px; font-family: 'Segoe UI', system-ui, Roboto, sans-serif;
+        background: transparent; }}
+.card {{ background: {DASH_CARD_BG}; border: 1px solid {DASH_BORDER}; border-radius: 12px;
+         padding: 16px 18px; box-shadow: 0 1px 3px rgba(16,24,40,0.06); height: 100%; }}
+.card-header {{ display:flex; align-items:center; gap:10px; margin-bottom: 2px; }}
+.card-icon {{ width:32px; height:32px; border-radius:50%; background:#EAF1FB; display:flex;
+              align-items:center; justify-content:center; font-size:15px; flex-shrink:0; }}
+.card-title {{ font-size: 15px; font-weight:700; color:{DASH_TEXT}; margin:0; }}
+.card-subtitle {{ font-size:12px; color:{DASH_SUBTEXT}; margin: 2px 0 14px 42px; }}
+.stat-grid {{ display:flex; flex-wrap:wrap; gap:14px; }}
+.stat-card {{ flex: 1 1 210px; background:{DASH_CARD_BG}; border:1px solid {DASH_BORDER};
+              border-radius:12px; padding:14px 16px; box-shadow:0 1px 3px rgba(16,24,40,0.06); }}
+.stat-top {{ display:flex; align-items:center; gap:8px; margin-bottom:8px; }}
+.stat-icon {{ width:26px; height:26px; border-radius:50%; background:#EAF1FB; display:flex;
+              align-items:center; justify-content:center; font-size:12px; flex-shrink:0; }}
+.stat-label {{ font-size:12px; color:{DASH_SUBTEXT}; font-weight:600; }}
+.stat-value {{ font-size:21px; font-weight:800; color:{DASH_TEXT}; margin:1px 0; line-height:1.2; }}
+.stat-sub {{ font-size:11px; color:{DASH_SUBTEXT}; margin-top:4px; }}
+.badge {{ display:inline-flex; align-items:center; gap:3px; font-size:11px; font-weight:700;
+          padding:2px 8px; border-radius:999px; }}
+.badge-pos {{ background:{DASH_POS_BG}; color:{DASH_POS_TXT}; }}
+.badge-neg {{ background:{DASH_NEG_BG}; color:{DASH_NEG_TXT}; }}
+.badge-off {{ background:#EEF0F3; color:{DASH_SUBTEXT}; }}
+.dtable {{ width:100%; border-collapse:collapse; font-size:12.5px; }}
+.dtable th {{ text-align:left; color:{DASH_SUBTEXT}; font-weight:600; padding:6px 8px;
+              border-bottom:1px solid {DASH_BORDER}; }}
+.dtable td {{ padding:7px 8px; border-bottom:1px solid #F0F1F3; color:{DASH_TEXT}; }}
+.dtable tr:last-child td {{ border-bottom:none; font-weight:700; }}
+.dtable td.num, .dtable th.num {{ text-align:right; }}
+.rank-row {{ display:flex; align-items:center; gap:10px; margin-bottom:11px; }}
+.rank-num {{ width:18px; font-size:12px; color:{DASH_SUBTEXT}; font-weight:700; flex-shrink:0; }}
+.rank-name {{ width:170px; font-size:12px; color:{DASH_TEXT}; flex-shrink:0;
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
+.rank-bar-track {{ flex:1; background:#EEF0F3; border-radius:4px; height:11px; }}
+.rank-bar-fill {{ height:100%; border-radius:4px; }}
+.rank-val {{ width:92px; text-align:right; font-size:11.5px; color:{DASH_TEXT}; font-weight:600;
+             flex-shrink:0; }}
+.rank-pct {{ width:46px; text-align:right; font-size:12px; color:{DASH_TEXT}; font-weight:700;
+             flex-shrink:0; }}
+.empty-state {{ display:flex; flex-direction:column; align-items:center; justify-content:center;
+                color:{DASH_SUBTEXT}; font-size:13px; text-align:center; padding:30px 20px; }}
+.conc-row {{ display:flex; gap:14px; margin-top:12px; }}
+.conc-item {{ flex:1; text-align:center; }}
+.conc-label {{ font-size:11.5px; color:{DASH_SUBTEXT}; margin-bottom:4px; }}
+.conc-value {{ font-size:19px; font-weight:800; color:{JOCS_AZUL}; }}
+"""
+
+def _dash_icono(nombre):
+    return f'<div class="card-icon">{DASH_ICONOS.get(nombre, "•")}</div>'
+
+def _dash_badge(delta_txt, positivo):
+    if not delta_txt:
+        return ""
+    cls = "badge-pos" if positivo else ("badge-neg" if positivo is False else "badge-off")
+    flecha = "▲" if positivo else ("▼" if positivo is False else "")
+    return f'<span class="badge {cls}">{flecha} {delta_txt}</span>'
+
+def html_card(body_html, height):
+    components.html(f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+                    f"<style>{DASH_CSS}</style></head><body>{body_html}</body></html>",
+                    height=height, scrolling=False)
+
+def stat_grid_card_html(cards, height=130):
+    """'cards': lista de dicts {icono, label, valor, sub (opcional), delta_txt
+    (opcional), delta_pos (True/False/None -> verde/rojo/gris)}."""
+    items = "".join(f"""
+      <div class="stat-card">
+        <div class="stat-top"><div class="stat-icon">{DASH_ICONOS.get(c.get('icono'), '•')}</div>
+          <div class="stat-label">{c['label']}</div></div>
+        <div class="stat-value">{c['valor']}</div>
+        {_dash_badge(c.get('delta_txt'), c.get('delta_pos'))}
+        {f'<div class="stat-sub">{c["sub"]}</div>' if c.get('sub') else ''}
+      </div>""" for c in cards)
+    html_card(f'<div class="stat-grid">{items}</div>', height)
+
+def empty_state_card_html(icono, titulo, subtitulo, mensaje, height=260):
+    body = f"""
+      <div class="card">
+        <div class="card-header">{_dash_icono(icono)}<p class="card-title">{titulo}</p></div>
+        <p class="card-subtitle">{subtitulo}</p>
+        <div class="empty-state">{mensaje}</div>
+      </div>"""
+    html_card(body, height)
+
+def donut_detalle_card_html(titulo_dona, subtitulo_dona, dona_serie, total_txt, subtotal_txt,
+                            titulo_tabla, titulo_col1, tabla_df, height=420):
+    """Tarjeta 'Composicion ... por concepto': dona (Recharts PieChart) +
+    leyenda a un lado, en el mismo iframe que la tabla de detalle debajo --
+    mismo patron de card que el mockup (dona arriba, detalle abajo)."""
+    colores = [color_for(k) if c != "Otros" else "#c9cdd3" for k, c in enumerate(dona_serie.index)]
+    data = [{"nombre": str(c), "valor": float(v), "color": colores[k]}
+            for k, (c, v) in enumerate(dona_serie.items())]
+    tot = dona_serie.sum() or 1.0
+    leyenda_rows = "".join(f"""
+      <div style="display:flex;align-items:center;gap:7px;font-size:12px;margin-bottom:7px;">
+        <span style="width:9px;height:9px;border-radius:50%;background:{colores[k]};flex-shrink:0;"></span>
+        <span style="color:{DASH_TEXT};flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{c}</span>
+        <span style="color:{DASH_SUBTEXT};font-weight:600;">{fmt(v)} · {v/tot*100:.1f}%</span>
+      </div>""" for k, (c, v) in enumerate(dona_serie.items()))
+
+    filas_tabla = "".join(f"""
+      <tr><td>{row[titulo_col1]}</td><td class="num">{fmt(row['Monto'])}</td>
+          <td class="num">{pct(row['Monto']/tot)}</td></tr>""" for _, row in tabla_df.iterrows())
+
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, PieChart, Pie, Cell, Tooltip }} = Recharts;
+const root = ReactDOM.createRoot(document.getElementById('dona-root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: 190 }},
+    h(PieChart, {{}},
+      h(Pie, {{ data: data, dataKey: 'valor', nameKey: 'nombre', innerRadius: 50, outerRadius: 85,
+               paddingAngle: 1, isAnimationActive: false }},
+        data.map((d, i) => h(Cell, {{ key: i, fill: d.color, stroke: '#fff', strokeWidth: 2 }}))
+      ),
+      h(Tooltip, {{ formatter: (v) => fmtMoney(v) }})
     )
-    arcos = base.mark_arc(innerRadius=r_in, outerRadius=r_out, stroke="#FFFFFF", strokeWidth=2)
-    pct_text = base.mark_text(radius=(r_in + r_out) / 2, fontSize=12, color="#FFFFFF").encode(text="pct_etq:N")
-    centro1 = alt.Chart(pd.DataFrame({"t": [total_txt]})).mark_text(
-        fontSize=15, fontWeight=700, color=JOCS_AZUL, dy=-6).encode(text="t:N")
-    centro2 = alt.Chart(pd.DataFrame({"t": [subtitulo_txt]})).mark_text(
-        fontSize=11, color="#54616f", dy=10).encode(text="t:N")
-    st.altair_chart(tema((arcos + pct_text + centro1 + centro2).properties(height=320)),
-                    use_container_width=True)
-    return dona
+  )
+);
+"""
+    body = f"""
+      <div class="card">
+        <div class="card-header">{_dash_icono('chart')}<p class="card-title">{titulo_dona}</p></div>
+        <p class="card-subtitle">{subtitulo_dona}</p>
+        <div style="display:flex;gap:14px;align-items:center;">
+          <div id="dona-root" style="flex:0 0 46%;"></div>
+          <div style="flex:1;max-height:190px;overflow:auto;">{leyenda_rows}</div>
+        </div>
+        <div style="text-align:center;margin-top:-4px;margin-bottom:10px;">
+          <div style="font-size:16px;font-weight:800;color:{JOCS_AZUL};">{total_txt}</div>
+          <div style="font-size:11px;color:{DASH_SUBTEXT};">{subtotal_txt}</div>
+        </div>
+        <p class="card-title" style="font-size:13px;margin:10px 0 8px;">{titulo_tabla}</p>
+        <div style="max-height:220px;overflow-y:auto;">
+          <table class="dtable">
+            <tr><th>{titulo_col1}</th><th class="num">Monto</th><th class="num">% Part.</th></tr>
+            {filas_tabla}
+          </table>
+        </div>
+      </div>
+      {RECHARTS_CDN}
+      <script>{RECHARTS_FMT_JS}
+      const data = {json.dumps(data)};
+      {render_js}</script>"""
+    html_card(body, height)
+
+def ranking_concentracion_card_html(titulo, subtitulo, badge_txt, serie_top, color, etq_contraparte,
+                                    etq_contraparte_sing, height=620):
+    """Tarjeta 'Principales proveedores/clientes' (ranking con barra) +
+    'Concentracion' (3 metricas), mismo iframe -- replica bar_h_recharts en
+    HTML/CSS puro (mas facil de alinear pixel a pixel con el mockup que
+    Recharts para una lista simple de barras numeradas)."""
+    tot = float(serie_top.sum()) or 1.0
+    maxv = float(serie_top.max()) or 1.0
+    filas = "".join(f"""
+      <div class="rank-row">
+        <div class="rank-num">{i+1}</div>
+        <div class="rank-name" title="{nombre}">{nombre}</div>
+        <div class="rank-bar-track"><div class="rank-bar-fill" style="width:{v/maxv*100:.1f}%;
+             background:{color};"></div></div>
+        <div class="rank-val">{fmt(v)}</div>
+        <div class="rank-pct">{v/tot*100:.1f}%</div>
+      </div>""" for i, (nombre, v) in enumerate(serie_top.items()))
+
+    top5 = serie_top.sort_values(ascending=False).head(5).sum() / tot
+    top10 = serie_top.sort_values(ascending=False).head(10).sum() / tot
+    principal = serie_top.sort_values(ascending=False).iloc[0] / tot
+
+    body = f"""
+      <div class="card">
+        <div class="card-header">{_dash_icono('people')}<p class="card-title">{titulo}</p>
+          <span class="badge badge-off" style="margin-left:auto;">{badge_txt}</span></div>
+        <p class="card-subtitle">{subtitulo}</p>
+        {filas}
+        <div style="border-top:1px solid {DASH_BORDER};margin-top:6px;padding-top:12px;">
+          <div class="card-header" style="margin-bottom:0;">{_dash_icono('trophy')}
+            <p class="card-title" style="font-size:13px;">Concentración</p></div>
+          <div class="conc-row">
+            <div class="conc-item"><div class="conc-label">Top 5 {etq_contraparte.lower()}</div>
+              <div class="conc-value">{pct(top5)}</div></div>
+            <div class="conc-item"><div class="conc-label">Top 10 {etq_contraparte.lower()}</div>
+              <div class="conc-value">{pct(top10)}</div></div>
+            <div class="conc-item"><div class="conc-label">{etq_contraparte_sing} principal</div>
+              <div class="conc-value">{pct(principal)}</div></div>
+          </div>
+        </div>
+      </div>"""
+    html_card(body, height)
 
 def pagina_analisis_flujo(es_ingreso):
     """Pagina 'Analisis de Ingresos'/'Analisis de Gastos' (mockup del usuario,
@@ -1491,10 +1663,15 @@ def pagina_analisis_flujo(es_ingreso):
     etq_contraparte_sing = "Cliente" if es_ingreso else "Proveedor"
     ppto_key = "ingresos" if es_ingreso else "gastos"
 
-    st.title(f"Análisis de {etq_titulo}")
-    st.caption(f"Comportamiento, composición y principales "
-              f"{'generadores de ingresos' if es_ingreso else 'proveedores de gastos'} · "
-              f"{', '.join(sel_labels)}" + (" · Solo PROPIOS" if SOLO_PROPIOS else ""))
+    st.markdown(f"""<div style="display:flex;align-items:center;gap:12px;margin-bottom:2px;">
+        <div style="width:40px;height:40px;border-radius:10px;background:{JOCS_AZUL};
+             display:flex;align-items:center;justify-content:center;font-size:19px;">
+             {DASH_ICONOS['chart']}</div>
+        <div><h1 style="margin:0;font-size:26px;color:{DASH_TEXT};">Análisis de {etq_titulo}</h1>
+        <p style="margin:0;font-size:13px;color:{DASH_SUBTEXT};">Comportamiento, composición y """
+        f"""principales {'generadores de ingresos' if es_ingreso else 'proveedores de gastos'}</p>
+        </div></div>""", unsafe_allow_html=True)
+    st.caption(f"{', '.join(sel_labels)}" + (" · Solo PROPIOS" if SOLO_PROPIOS else ""))
 
     if base_df.empty:
         st.info(f"Sin {etq_titulo.lower()} para el periodo y aduana seleccionados.")
@@ -1508,22 +1685,33 @@ def pagina_analisis_flujo(es_ingreso):
     ppto_mes_tot = float(sum(ppto_mensual.get(ppto_key, {}).values())) if tiene_ppto else None
     cumplimiento = tot_mes / ppto_mes_tot if ppto_mes_tot else None
 
-    st.divider()
-    cA, cB, cC, cD = st.columns(4)
-    cA.metric(f"{etq_sing} del mes", fmt(tot_mes))
-    if ppto_mes_tot:
-        cB.metric("Presupuesto del mes", fmt(ppto_mes_tot),
-                 delta=f"{cumplimiento * 100:.0f}% de cumplimiento" if cumplimiento is not None else None,
-                 delta_color="off")
-    else:
-        cB.metric("Presupuesto del mes", "No disponible")
-    cC.metric(f"{etq_contraparte} activos", f"{n_contrapartes:,}")
-    cD.metric("Resultado operativo", fmt(MARGEN),
-             delta=f"Margen {MARGEN_PCT * 100:.1f}%" if MARGEN_PCT is not None else None, delta_color="off")
+    st.write("")
+    cards = [
+        {"icono": "money", "label": f"{etq_sing} del mes", "valor": fmt(tot_mes)},
+        {"icono": "target", "label": "Presupuesto del mes",
+         "valor": fmt(ppto_mes_tot) if ppto_mes_tot else "No disponible",
+         "delta_txt": f"{cumplimiento * 100:.0f}% de cumplimiento" if cumplimiento is not None else None,
+         "delta_pos": (cumplimiento >= 1.0) if cumplimiento is not None else None},
+        {"icono": "people", "label": f"{etq_contraparte} activos", "valor": f"{n_contrapartes:,}"},
+        {"icono": "trend", "label": "Resultado operativo", "valor": fmt(MARGEN),
+         "delta_txt": f"Margen {MARGEN_PCT * 100:.1f}%" if MARGEN_PCT is not None else None,
+         "delta_pos": (MARGEN_PCT >= 0) if MARGEN_PCT is not None else None},
+    ]
+    stat_grid_card_html(cards, height=135)
     st.caption("Acumulado, comparativo contra el mes/año anterior y evolución mensual pendientes de "
               "cargar histórico real mes a mes (hoy solo hay un mes de datos reales en vivo).")
 
-    st.divider()
+    st.write("")
+    col_ev, col_tend = st.columns(2)
+    with col_ev:
+        empty_state_card_html("chart", f"Evolución de {etq_titulo.lower()}",
+                              f"{etq_sing} real vs. presupuesto mensual",
+                              "📅 Se mostrará conforme se carguen más meses de datos reales.", height=260)
+    with col_tend:
+        empty_state_card_html("trend", "Tendencia", f"Variación mensual del {etq_sing.lower()} real vs. presupuesto",
+                              "📅 Se mostrará conforme se carguen más meses de datos reales.", height=260)
+
+    st.write("")
     st.subheader("Resumen por Aduana")
     aduanas_disp = sorted(base_df["aduana"].dropna().unique().tolist())
     if not aduanas_disp:
@@ -1532,13 +1720,14 @@ def pagina_analisis_flujo(es_ingreso):
         aduana_resumen_sel = st.selectbox("Aduana", aduanas_disp, key=f"resumen_aduana_{etq_sing}")
         base_aduana = base_df[base_df["aduana"] == aduana_resumen_sel]
         tot_aduana = float(base_aduana["importe"].sum())
-        ra1, ra2 = st.columns(2)
-        ra1.metric(f"{etq_sing} total del mes", fmt(tot_aduana),
-                  delta=f"{tot_aduana / tot_mes * 100:.1f}% del total" if tot_mes else None, delta_color="off")
-        ra2.metric("Número de operaciones", f"{len(base_aduana):,}")
+        cards_aduana = [
+            {"icono": "building", "label": f"{etq_sing} total del mes", "valor": fmt(tot_aduana),
+             "sub": f"{tot_aduana / tot_mes * 100:.1f}% del total" if tot_mes else None},
+            {"icono": "box", "label": "Número de operaciones", "valor": f"{len(base_aduana):,}"},
+        ]
+        stat_grid_card_html(cards_aduana, height=120)
 
-    st.divider()
-    st.subheader(f"Composición de {etq_titulo.lower()} por concepto")
+    st.write("")
     if es_ingreso:
         campo_concepto = "descripcion"
         st.caption("Emitidas no trae una categoría de cierre como Recibidas; se agrupa por "
@@ -1552,41 +1741,33 @@ def pagina_analisis_flujo(es_ingreso):
     conc[campo_concepto] = conc[campo_concepto].fillna("Sin categorizar")
     por_concepto = conc.groupby(campo_concepto)["importe"].sum()
     por_concepto_pos = por_concepto[por_concepto > 0].sort_values(ascending=False)
-    if por_concepto_pos.empty:
-        st.info("Sin conceptos para mostrar.")
-    else:
-        col_dona, col_tabla = st.columns([1.1, 1])
-        with col_dona:
-            dona = dona_concepto_altair(por_concepto_pos, "Concepto", fmt_m(tot_mes),
-                                        f"{etq_sing} total")
-        with col_tabla:
-            tabla_concepto = por_concepto_pos.reset_index()
-            tabla_concepto.columns = ["Concepto", "Monto"]
-            tabla_concepto["% Part."] = (tabla_concepto["Monto"] / por_concepto_pos.sum()).map(pct)
-            tabla_concepto["Monto"] = tabla_concepto["Monto"].map(fmt)
-            st.dataframe(tabla_concepto, use_container_width=True, hide_index=True, height=420)
-
-    st.divider()
-    st.subheader(f"Principales {etq_contraparte.lower()} por {etq_sing.lower()}")
     por_contraparte = base_df.groupby("contraparte")["importe"].sum()
     por_contraparte = por_contraparte[por_contraparte > 0].sort_values(ascending=False)
-    if por_contraparte.empty:
-        st.info(f"Sin {etq_contraparte.lower()} identificados.")
-    else:
-        tot_cp = float(por_contraparte.sum())
-        top10 = por_contraparte.head(10)
-        if len(por_contraparte) > 10:
-            top10 = pd.concat([top10, pd.Series({"Otros": por_contraparte.iloc[10:].sum()})])
-        bar_h_recharts(top10, color_real, height=max(320, 34 * len(top10) + 40))
 
-        st.subheader("Concentración")
-        top5_pct = por_contraparte.head(5).sum() / tot_cp
-        top10_pct = por_contraparte.head(10).sum() / tot_cp
-        principal_pct = por_contraparte.iloc[0] / tot_cp
-        cc1, cc2, cc3 = st.columns(3)
-        cc1.metric(f"Top 5 {etq_contraparte.lower()}", pct(top5_pct))
-        cc2.metric(f"Top 10 {etq_contraparte.lower()}", pct(top10_pct))
-        cc3.metric(f"{etq_contraparte_sing} principal", pct(principal_pct))
+    col_izq, col_der = st.columns(2)
+    with col_izq:
+        if por_concepto_pos.empty:
+            st.info("Sin conceptos para mostrar.")
+        else:
+            tabla_concepto = por_concepto_pos.reset_index()
+            tabla_concepto.columns = ["Concepto", "Monto"]
+            dona_serie = por_concepto_pos.head(6)
+            if len(por_concepto_pos) > 6:
+                dona_serie = pd.concat([dona_serie, pd.Series({"Otros": por_concepto_pos.iloc[6:].sum()})])
+            donut_detalle_card_html(
+                f"Composición de {etq_titulo.lower()} por concepto",
+                "Participación sobre el total", dona_serie, fmt_m(tot_mes),
+                f"{etq_sing} total", f"Detalle de {etq_titulo.lower()} por concepto", "Concepto",
+                tabla_concepto, height=560)
+    with col_der:
+        if por_contraparte.empty:
+            st.info(f"Sin {etq_contraparte.lower()} identificados.")
+        else:
+            top10 = por_contraparte.head(10)
+            ranking_concentracion_card_html(
+                f"Principales {etq_contraparte.lower()} por {etq_sing.lower()}",
+                f"Top 10 {etq_contraparte.lower()} del periodo", "Top 10", top10, color_real,
+                etq_contraparte, etq_contraparte_sing, height=620)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PANORAMA
