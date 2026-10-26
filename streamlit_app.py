@@ -5,6 +5,7 @@ import unicodedata
 from collections import namedtuple
 from io import BytesIO
 import altair as alt
+import openpyxl
 import pandas as pd
 import requests
 import streamlit as st
@@ -33,6 +34,17 @@ SHEET_EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?fo
 # a proposito; ver load_sueldos/load_honorarios_josefa/load_costos_referencia/
 # load_utilidad_operativa mas abajo para las otras hojas que si se leen).
 HOJAS_USADAS = {"emitidas": "EMITIDA", "recibidas": "RECIBIDA"}
+
+# Presupuesto: TODAVIA no vive en el Sheet en vivo (el usuario lo subio como
+# archivo local suelto, carpeta "AGOSTO") -- esto funciona en local pero NO en
+# produccion (Streamlit Cloud no tiene acceso a este disco). Pendiente: subir
+# una pestaña de presupuesto al mismo Google Sheet y leerla de ahi, igual que
+# todo lo demas. Mientras tanto, load_presupuesto() devuelve vacio si no
+# encuentra el archivo (no truena el tablero).
+PRESUPUESTO_PATH = (BASE / "EXCEL" / "AGOSTO-20261026T223758Z-1-001" / "AGOSTO"
+                    / "082026 PRESUPUESTO.xlsx")
+CONCEPTO_PRESUPUESTO = {"INGRESOS": "ingresos", "CTO REF": "costos",
+                        "SUELDOS": "sueldos", "GASTOS OP": "gastos"}
 
 MESES = {1: "Ene", 2: "Feb", 3: "Mar", 4: "Abr", 5: "May", 6: "Jun",
          7: "Jul", 8: "Ago", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dic"}
@@ -304,6 +316,94 @@ root.render(
 
 def _ancho_eje_categoria(labels, min_w=90, max_w=240, por_char=6.5):
     return int(min(max_w, max(min_w, por_char * max((len(str(l)) for l in labels), default=10))))
+
+def barra_real_ppto_html(real, ppto, color):
+    """Barrita HTML pura (sin iframe/Recharts, muy chica para justificar uno):
+    relleno de color = Real, marca ambar = Ppto -- mismo lenguaje visual que el
+    mockup ('Ingresos - Avance anual'), aplicado aqui a Real vs Ppto del mes."""
+    if ppto is None or ppto <= 0:
+        return ""
+    techo = max(real, ppto) * 1.15 or 1.0
+    frac_real = max(0.0, min(1.0, real / techo)) * 100
+    frac_ppto = max(0.0, min(1.0, ppto / techo)) * 100
+    return (
+        f'<div style="position:relative;height:12px;background:#eceff2;'
+        f'border-radius:3px;margin:8px 0 2px;">'
+        f'<div style="position:absolute;left:0;top:0;height:100%;width:{frac_real:.1f}%;'
+        f'background:{color};border-radius:3px;"></div>'
+        f'<div style="position:absolute;left:{frac_ppto:.1f}%;top:-2px;height:16px;'
+        f'width:2px;background:{C_MARGEN};"></div></div>'
+    )
+
+def ranking_aduana_recharts(df, color, height=None):
+    """Barra horizontal Real (color) + marca vertical Ppto (ambar) por aduana,
+    ordenado como venga 'df'. 'df' columnas: aduana, real, ppto (puede ser None
+    si esa aduana no tiene presupuesto), delta_txt (texto ya formateado)."""
+    h_px = height or max(280, 32 * len(df) + 60)
+    ancho_eje = _ancho_eje_categoria(df["aduana"])
+    # Piso puede ser negativo (aduanas con perdida operativa) -- sin esto el
+    # dominio se queda en [0, techo] y Recharts intenta dibujar barras con
+    # ancho negativo para esas filas (error de SVG, la barra no se ve).
+    piso = min(0.0, float(df["real"].min()), float(df["ppto"].fillna(0).min())) * 1.15
+    techo = float(max(df["real"].max(), df["ppto"].fillna(0).max())) * 1.15 or 1.0
+    data = [{"aduana": str(r.aduana), "real": float(r.real),
+            "ppto": (float(r.ppto) if pd.notna(r.ppto) else None),
+            "real_txt": fmt(r.real), "ppto_txt": fmt(r.ppto) if pd.notna(r.ppto) else "—",
+            "delta_txt": r.delta_txt}
+            for r in df.itertuples()]
+    render_js = f"""
+const h = React.createElement;
+const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList, ReferenceLine }} = Recharts;
+
+function BarraReal(props) {{
+  const {{ x, y, width, height, payload }} = props;
+  // 'width' viene negativo cuando 'real' queda del lado negativo del eje
+  // (perdida operativa) -- SVG no acepta width<0, así que se normaliza el
+  // origen en vez de dejar que el <rect> truene.
+  const xReal = width < 0 ? x + width : x;
+  const wReal = Math.abs(width);
+  const pxPorUnidad = payload.real !== 0 ? width / payload.real : 0;
+  const elementos = [h('rect', {{ key: 'real', x: xReal, y, width: wReal, height, fill: '{color}', rx: 3 }})];
+  if (payload.ppto != null && pxPorUnidad !== 0) {{
+    const xPpto = x + pxPorUnidad * payload.ppto;
+    elementos.push(h('line', {{ key: 'ppto', x1: xPpto, x2: xPpto, y1: y - 4, y2: y + height + 4,
+                              stroke: '{C_MARGEN}', strokeWidth: 3 }}));
+  }}
+  return h('g', {{}}, elementos);
+}}
+
+function TooltipRanking(props) {{
+  const {{ active, payload, label }} = props;
+  if (!active || !payload || !payload.length) return null;
+  const fila = payload[0].payload;
+  return h('div', {{ style: {{ background: '#fff', border: '1px solid #d7dce1',
+                             borderRadius: 6, padding: '8px 12px', fontSize: 13 }} }},
+    h('div', {{ style: {{ fontWeight: 700, marginBottom: 4, color: '{JOCS_AZUL}' }} }}, label),
+    h('div', {{}}, 'Real: ' + fila.real_txt),
+    h('div', {{}}, 'Presupuesto: ' + fila.ppto_txt),
+    fila.delta_txt ? h('div', {{ style: {{ color: '{C_MARGEN}', fontWeight: 600 }} }}, fila.delta_txt) : null
+  );
+}}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(
+  h(ResponsiveContainer, {{ width: '100%', height: {h_px - 10} }},
+    h(BarChart, {{ data: data, layout: 'vertical', margin: {{ top: 10, right: 70, left: 10, bottom: 10 }} }},
+      h(CartesianGrid, {{ strokeDasharray: '3 3', horizontal: false }}),
+      h(XAxis, {{ type: 'number', domain: [{piso}, {techo}], allowDataOverflow: true, tickFormatter: fmtMoney,
+                 tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(YAxis, {{ dataKey: 'aduana', type: 'category', width: {ancho_eje},
+                 tick: {{ fontSize: 11, fill: '#54616f' }}, axisLine: {{ stroke: '#d7dce1' }} }}),
+      h(Tooltip, {{ content: h(TooltipRanking) }}),
+      h(ReferenceLine, {{ x: 0, stroke: '#9aa5b1' }}),
+      h(Bar, {{ dataKey: 'real', shape: BarraReal, isAnimationActive: false }},
+        h(LabelList, {{ dataKey: 'delta_txt', position: 'right', fontSize: 11, fill: '#3d4752' }})
+      )
+    )
+  )
+);
+"""
+    recharts_component(render_js, data, height=h_px)
 
 def bar_h_recharts(serie, color, height=None, formateador=fmt_m):
     """Version Recharts de barra_h(): barra horizontal simple + etiqueta a la derecha."""
@@ -1020,6 +1120,59 @@ def load_utilidad_operativa():
 MES_COL_MAYUS = {1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO",
                  7: "JULIO", 8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE",
                  12: "DICIEMBRE"}
+MES_NUM_POR_NOMBRE = {v: k for k, v in MES_COL_MAYUS.items()}
+
+def _leer_bloques_presupuesto(ws):
+    """El archivo de presupuesto apila 4 bloques (INGRESOS/CTO REF/SUELDOS/
+    GASTOS OP), cada uno dos veces: primero el mes, luego (tras una fila
+    'ACUMULADO') el acumulado del año a ese mes -- mismo "bloques apilados"
+    que Town Hall, pero con header de 2 celdas (concepto + nombre del mes) en
+    vez de una fila 'AREA'. Devuelve (mensual, acumulado, mes_num), cada uno
+    {concepto: {aduana: valor}}."""
+    rows = list(ws.iter_rows(min_row=1, values_only=True))
+    mensual, acumulado, mes_num = {}, {}, None
+    i, es_acum = 0, False
+    while i < len(rows):
+        r = rows[i]
+        if not r or r[0] is None:
+            i += 1
+            continue
+        a0 = str(r[0]).strip().upper()
+        if a0 == "ACUMULADO" and (len(r) < 2 or r[1] is None):
+            es_acum = True
+            i += 1
+            continue
+        if a0 in CONCEPTO_PRESUPUESTO and len(r) > 1 and isinstance(r[1], str):
+            concepto = CONCEPTO_PRESUPUESTO[a0]
+            mes_num = mes_num or MES_NUM_POR_NOMBRE.get(r[1].strip().upper())
+            datos = {}
+            i += 1
+            while i < len(rows):
+                r2 = rows[i]
+                if not r2 or r2[0] is None:
+                    break
+                a = str(r2[0]).strip().upper()
+                if a.startswith("TOTAL"):
+                    i += 1
+                    break
+                aduana = ALIAS_ADUANA_UO.get(_normaliza_aduana(str(r2[0])), _normaliza_aduana(str(r2[0])))
+                val = r2[1] if len(r2) > 1 else None
+                datos[aduana] = float(val) if isinstance(val, (int, float)) else 0.0
+                i += 1
+            (acumulado if es_acum else mensual)[concepto] = datos
+            es_acum = False
+            continue
+        i += 1
+    return mensual, acumulado, mes_num
+
+@st.cache_data(show_spinner=False)
+def load_presupuesto():
+    """Presupuesto Real por aduana (ver nota junto a PRESUPUESTO_PATH). Devuelve
+    (mensual, acumulado, mes_num) -- vacio/None si el archivo no esta."""
+    if not PRESUPUESTO_PATH.exists():
+        return {}, {}, None
+    wb = openpyxl.load_workbook(PRESUPUESTO_PATH, data_only=True)
+    return _leer_bloques_presupuesto(wb[wb.sheetnames[0]])
 
 @st.cache_data(show_spinner=False)
 def load_imile_laredo_extra():
@@ -1298,13 +1451,6 @@ if pagina == "Utilidad Operativa":
 
     if n_cancel:
         st.info(f"Se excluyeron **{n_cancel} líneas canceladas** ({fmt(monto_cancel)}) de todas las cifras.")
-
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Emitida", fmt_m(TOT_EM))
-    c2.metric("Recibida", fmt_m(TOT_REC))
-    c3.metric("Margen", fmt_m(MARGEN),
-              delta=pct(MARGEN_PCT) if MARGEN_PCT is not None else None)
-    c4.metric("Líneas (E+R)", f"{(EM['importe'] != 0).sum() + (REC['importe'] != 0).sum():,}")
     if n_sin_monto:
         st.caption(f"{n_sin_monto:,} líneas traen importe pero no monto en el Excel "
                    f"({fmt(importe_sin_monto)} de importe) y no se suman a las cifras.")
@@ -1315,133 +1461,140 @@ if pagina == "Utilidad Operativa":
         uo_ad = utilidad_op_f.groupby("aduana")[["emitidas", "HONORARIOS AA", "SUELDOS",
                                                  "ctos_referencia", "recibida", "ingreso",
                                                  "egreso", "utilidad"]].sum()
+        # "Gastos Operativos" = lo que sobra del egreso una vez quitados Sueldos y
+        # Costos de Referencia -- mismo calculo que 'recibida_visual' del cascada
+        # anterior, es el concepto real que se compara contra "GASTOS OP" del
+        # presupuesto (ver load_presupuesto).
+        uo_ad["gastos_operativos"] = uo_ad["egreso"] - uo_ad["SUELDOS"] - uo_ad["ctos_referencia"]
         aduanas_uo = uo_ad.sort_values("utilidad", ascending=False).index.tolist()
 
-        st.divider()
-        st.subheader("Utilidad Operativa por Aduana")
-        st.caption("Utilidad Operativa = Ingresos − Egresos, donde Ingresos = Emitidas "
-                   "(hoja 'emitidas') + Honorarios AA, y Egresos = Recibida (hoja 'recibidas') "
-                   "+ Sueldos + Costos de Referencia (de la hoja 'UTILIDAD OPERATIVA'). Rojos = "
-                   "los 3 gastos apilados; amarillo = Utilidad Operativa; línea verde = Ingreso. "
-                   "Escala logarítmica para que las aduanas chicas no desaparezcan.")
-        df_bullet_uo = uo_ad.reset_index().sort_values("ingreso", ascending=False)
-        # El segmento "Recibidas" se calcula como resto (egreso - Sueldos - Costos de
-        # Referencia), no se toma la columna 'recibida' cruda directo -- para la
-        # mayoría de las aduanas da lo mismo (así se define 'egreso'), pero en IMILE
-        # LAREDO 'egreso' trae un ajuste extra (ver load_imile_laredo_extra) que no
-        # vive en ninguna columna individual; sin este resto, la barra apilada se
-        # quedaría corta y la Utilidad Operativa se vería inflada visualmente.
-        df_bullet_uo["recibida_visual"] = (df_bullet_uo["egreso"] - df_bullet_uo["SUELDOS"]
-                                           - df_bullet_uo["ctos_referencia"])
-        bullet_uo_recharts(
-            df_bullet_uo, "aduana", "ingreso",
-            segmentos=[("Sueldos", "#e3a39c", "SUELDOS"),
-                      ("Costos de Referencia", C_NEG, "ctos_referencia"),
-                      ("Recibidas", "#7b241c", "recibida_visual")],
-            egreso_col="egreso", utilidad_col="utilidad", height=440,
-        )
-
-        st.divider()
-        st.subheader("Cascada de Utilidad Operativa")
-        aduana_cascada_sel = st.selectbox(
-            "Aduana", ["Todas"] + aduanas_uo, key="aduana_cascada_uo")
-        if aduana_cascada_sel == "Todas":
-            tot_cascada = uo_ad[["HONORARIOS AA", "SUELDOS", "ctos_referencia",
-                                 "ingreso", "egreso"]].sum()
+        # ── Presupuesto (ver nota junto a PRESUPUESTO_PATH: archivo local, aun
+        # no migrado al Sheet en vivo) ──────────────────────────────────────────
+        ppto_mensual, ppto_acumulado, mes_ppto = load_presupuesto()
+        tiene_ppto = bool(ppto_mensual)
+        ppto_df = pd.DataFrame()
+        ppto_anual_df = pd.DataFrame()
+        if tiene_ppto:
+            ppto_df = pd.DataFrame({c: pd.Series(v) for c, v in ppto_mensual.items()}).fillna(0.0)
+            ppto_df["utilidad"] = (ppto_df["ingresos"] - ppto_df["costos"]
+                                   - ppto_df["sueldos"] - ppto_df["gastos"])
+            ppto_acum_df = pd.DataFrame({c: pd.Series(v) for c, v in ppto_acumulado.items()}).fillna(0.0)
+            ppto_acum_df["utilidad"] = (ppto_acum_df["ingresos"] - ppto_acum_df["costos"]
+                                        - ppto_acum_df["sueldos"] - ppto_acum_df["gastos"])
+            # Ppto anual = PROYECCION (acumulado a la fecha / meses transcurridos x
+            # 12), no una meta anual real -- no existe ese dato todavia, a pedido
+            # del usuario se muestra como proyeccion mientras tanto.
+            ppto_anual_df = ppto_acum_df / (mes_ppto or 1) * 12
         else:
-            tot_cascada = uo_ad.loc[aduana_cascada_sel, ["HONORARIOS AA", "SUELDOS",
-                                                          "ctos_referencia", "ingreso", "egreso"]]
-        # "Ingresos"/"Recibidas" se leen de ingreso/egreso (ya con el ajuste de
-        # IMILE LAREDO sumado) menos su componente que ya va en otra barra -- así
-        # el total de la cascada cuadra con la utilidad de la aduana (o de todas).
-        df_cascada_uo = pd.DataFrame({
-            "label": ["Ingresos", "Honorarios AA", "Sueldos", "Costos de Referencia", "Recibidas"],
-            "valor": [tot_cascada["ingreso"] - tot_cascada["HONORARIOS AA"], tot_cascada["HONORARIOS AA"],
-                     -tot_cascada["SUELDOS"], -tot_cascada["ctos_referencia"],
-                     -(tot_cascada["egreso"] - tot_cascada["SUELDOS"] - tot_cascada["ctos_referencia"])],
-        })
-        waterfall_recharts(df_cascada_uo, "label", "valor",
-                          color_pos=JOCS_AZUL, color_neg=C_NEG, color_total=C_MARGEN,
-                          total_label="Utilidad Operativa", height=400)
+            st.warning("No se encontró el archivo de presupuesto local "
+                      f"(`{PRESUPUESTO_PATH.name}`); se muestra solo lo Real.")
 
-        bc1, bc2 = st.columns([1.6, 1])
-        with bc1:
-            # Las 17 aduanas, ordenadas por volumen combinado (ingreso+egreso ya
-            # ajustado, no emitida+recibida cruda, para que IMILE LAREDO entre
-            # ordenada con su actividad real -- no factura por el SAT, así que su
-            # emitida/recibida real es $0). Escala log para que un $100k no
-            # desaparezca junto a un $1.7M.
-            aduanas_radar = sorted(
-                aduanas_uo,
-                key=lambda a: -(uo_ad.loc[a, "ingreso"] + uo_ad.loc[a, "egreso"]),
-            )
-            df_radar_uo = pd.DataFrame({
-                "aduana": aduanas_radar,
-                "Ingreso": [float(uo_ad.loc[a, "ingreso"]) for a in aduanas_radar],
-                "Utilidad Operativa": [float(uo_ad.loc[a, "utilidad"]) for a in aduanas_radar],
-            })
-            st.caption("Las 17 aduanas, por volumen combinado. Escala logarítmica. "
-                       "Utilidad Operativa negativa se marca en rojo (punto y tooltip).")
-            radar_recharts(df_radar_uo, "aduana",
-                          {"Ingreso": C_EMITIDA, "Utilidad Operativa": C_MARGEN},
-                          height=480, escala_log=True,
-                          serie_resaltar_negativo="Utilidad Operativa")
-        with bc2:
-            aduana_uo_sel = st.selectbox(
-                "Seleccionar Aduana", aduanas_uo,
-                format_func=lambda a: f"{a}  ·  {fmt_m(uo_ad.loc[a, 'utilidad'])}")
-            fila = uo_ad.loc[aduana_uo_sel]
-            ingresos_sel = float(fila["ingreso"])
-            # % Utilidad Operativa = cuánto representa esta aduana de la Utilidad
-            # Operativa TOTAL (todas las aduanas), no el margen propio de la aduana
-            # (utilidad/ingreso) -- a pedido del usuario.
-            tot_utilidad_uo = float(uo_ad["utilidad"].sum())
-            pct_uo_sel = fila["utilidad"] / tot_utilidad_uo if tot_utilidad_uo else None
-            # IMILE LAREDO no factura por el SAT (ver load_imile_laredo_extra): su
-            # 'emitidas' real es $0 aunque sí tiene actividad real -- en la ficha de
-            # detalle se muestra el mismo monto que 'Ingresos' en vez de $0, solo
-            # para esta aduana, para no sugerir que no factura nada.
-            emitidas_sel = ingresos_sel if aduana_uo_sel == "IMILE LAREDO" else float(fila["emitidas"])
-            # Montos exactos (sin redondear a $X.XM/$Xk) para poder auditarlos a detalle.
-            tabla_uo = pd.DataFrame({
-                "Concepto": ["Emitidas", "Honorarios AA", "Ingresos", "Recibidas", "Sueldos",
-                            "Costos de Referencia", "Egresos", "Utilidad Operativa",
-                            "% Utilidad Operativa"],
-                "Valor": [fmt(emitidas_sel), fmt(float(fila["HONORARIOS AA"])),
-                         fmt(ingresos_sel), fmt(float(fila["recibida"])),
-                         fmt(float(fila["SUELDOS"])), fmt(float(fila["ctos_referencia"])),
-                         fmt(float(fila["egreso"])), fmt(float(fila["utilidad"])),
-                         pct(pct_uo_sel) if pct_uo_sel is not None else "—"],
-            })
-            st.dataframe(tabla_uo, use_container_width=True, hide_index=True)
-
+        # ══════════════════════════════════════════════════════════════════════
+        # RESUMEN EJECUTIVO
+        # ══════════════════════════════════════════════════════════════════════
         st.divider()
-        st.subheader("Pareto de Utilidad Operativa (todo CC)")
-        st.caption("Ordenado por magnitud (positiva o negativa). Azul = utilidad positiva, "
-                   "rojo = negativa. Línea ámbar: % acumulado del total en valor absoluto.")
-        pareto_recharts(uo_ad["utilidad"], JOCS_AZUL, color_neg=C_NEG, height=420)
+        st.subheader("Resumen Ejecutivo")
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            meses_resumen = st.multiselect("Mes", labels_disp, default=sel_labels, key="uo_resumen_mes")
+        with fc2:
+            aduanas_resumen = st.multiselect("Aduana", aduanas_uo, default=[], key="uo_resumen_aduana",
+                                             placeholder="Todas las aduanas")
+        uo_resumen = (utilidad_op_f[utilidad_op_f["periodo_label"].isin(meses_resumen)]
+                     if meses_resumen else utilidad_op_f.iloc[0:0])
+        if aduanas_resumen:
+            uo_resumen = uo_resumen[uo_resumen["aduana"].isin(aduanas_resumen)]
+        uo_resumen_ad = uo_resumen.groupby("aduana")[["SUELDOS", "ctos_referencia", "ingreso",
+                                                       "egreso", "utilidad"]].sum()
+        uo_resumen_ad["gastos_operativos"] = (uo_resumen_ad["egreso"] - uo_resumen_ad["SUELDOS"]
+                                              - uo_resumen_ad["ctos_referencia"])
+        aduanas_ppto_sel = aduanas_resumen or aduanas_uo
 
-    st.divider()
-    st.subheader("Honorarios AA y Referencias")
-    col_izq, col_der = st.columns(2)
-    with col_izq:
-        st.markdown("**Honorarios de Josefa**")
-        tot_josefa = josefa_f["monto"].sum() if not josefa_f.empty else 0.0
-        st.metric("Total", fmt_m(tot_josefa))
-        if not josefa_f.empty:
-            por_ad_j = josefa_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
-            bar_h_recharts(por_ad_j, JOCS_AZUL, height=max(260, 30 * len(por_ad_j)))
+        conceptos_kpi = [("Ingresos", "ingreso", "ingresos", C_EMITIDA),
+                         ("Costos de Referencia", "ctos_referencia", "costos", C_NEG),
+                         ("Gastos Operativos", "gastos_operativos", "gastos", JOCS_VERDE),
+                         ("Utilidad Operativa", "utilidad", "utilidad", C_MARGEN)]
+        cols_kpi = st.columns(4)
+        for col, (nombre, real_key, ppto_key, color) in zip(cols_kpi, conceptos_kpi):
+            with col, st.container(border=True):
+                st.markdown(f"**{nombre}**")
+                real_val = float(uo_resumen_ad[real_key].sum()) if not uo_resumen_ad.empty else 0.0
+                st.metric("Real", fmt(real_val))
+                if tiene_ppto:
+                    ppto_val = float(ppto_df.loc[ppto_df.index.isin(aduanas_ppto_sel), ppto_key].sum())
+                    delta = real_val / ppto_val - 1 if ppto_val else None
+                    st.caption(f"Ppto: {fmt(ppto_val)}" + (f" · {pct(delta)} vs ppto" if delta is not None else ""))
+                    st.markdown(barra_real_ppto_html(real_val, ppto_val, color), unsafe_allow_html=True)
+                else:
+                    st.caption("Ppto no disponible")
+        st.caption("Acumulado y avance contra presupuesto anual pendientes de cargar el histórico "
+                  "real mes a mes (hoy solo hay un mes de datos reales en vivo).")
+
+        # ══════════════════════════════════════════════════════════════════════
+        # RENTABILIDAD POR ADUANA
+        # ══════════════════════════════════════════════════════════════════════
+        st.divider()
+        st.subheader("Rentabilidad por Aduana")
+        st.caption("Utilidad Operativa real (barra) vs. presupuesto del mes (marca ámbar).")
+        margen_cons = uo_ad["utilidad"].sum() / uo_ad["ingreso"].sum() if uo_ad["ingreso"].sum() else None
+        st.markdown(f"**Utilidad consolidada: {fmt(uo_ad['utilidad'].sum())}**" +
+                   (f" · Margen {pct(margen_cons)}" if margen_cons is not None else ""))
+        modo_rank = st.radio("Ver", ["Top 5", "Todas"], horizontal=True, key="uo_rank_modo",
+                             label_visibility="collapsed")
+        orden_rank = uo_ad.sort_values("utilidad", ascending=False)
+        n_total_aduanas = len(orden_rank)
+        if modo_rank == "Top 5":
+            orden_rank = orden_rank.head(5)
+        df_rank_chart = orden_rank.reset_index()[["aduana", "utilidad"]].rename(columns={"utilidad": "real"})
+        if tiene_ppto:
+            df_rank_chart["ppto"] = df_rank_chart["aduana"].map(ppto_df["utilidad"])
+            df_rank_chart["delta_txt"] = df_rank_chart.apply(
+                lambda r: pct(r["real"] / r["ppto"] - 1) if pd.notna(r["ppto"]) and r["ppto"] else "", axis=1)
         else:
-            st.info("Sin datos.")
-    with col_der:
-        st.markdown("**Costos de Referencias**")
-        tot_cr = costos_ref_f["monto"].sum() if not costos_ref_f.empty else 0.0
-        st.metric("Total", fmt_m(tot_cr))
-        if not costos_ref_f.empty:
-            por_ad_cr = costos_ref_f.groupby("aduana")["monto"].sum().sort_values(ascending=False)
-            bar_h_recharts(por_ad_cr, JOCS_VERDE, height=max(260, 30 * len(por_ad_cr)))
-        else:
-            st.info("Sin datos.")
+            df_rank_chart["ppto"] = None
+            df_rank_chart["delta_txt"] = ""
+        ranking_aduana_recharts(df_rank_chart, JOCS_AZUL, height=max(280, 44 * len(df_rank_chart) + 60))
+        if modo_rank == "Top 5" and n_total_aduanas > 5:
+            st.caption(f"Se muestran 5 de {n_total_aduanas} aduanas. Cambia a \"Todas\" para verlas completas.")
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ESTADO DE RESULTADOS
+        # ══════════════════════════════════════════════════════════════════════
+        if tiene_ppto:
+            st.divider()
+            st.subheader("Estado de Resultados")
+            mes_ppto_txt = MES_COL_MAYUS.get(mes_ppto, "").title() if mes_ppto else "—"
+            st.caption(f"Mes: {mes_ppto_txt}. Vista acumulada y comparativo contra 2025 pendientes "
+                      "de histórico (ver Resumen Ejecutivo). \"Ppto. anual\" es una proyección simple "
+                      "(acumulado a la fecha ÷ meses transcurridos × 12), no una meta anual real.")
+
+            ingresos_real, costos_real = float(uo_ad["ingreso"].sum()), float(uo_ad["ctos_referencia"].sum())
+            sueldos_real, gastos_real = float(uo_ad["SUELDOS"].sum()), float(uo_ad["gastos_operativos"].sum())
+            utilidad_real = float(uo_ad["utilidad"].sum())
+            ingresos_ppto, costos_ppto = float(ppto_df["ingresos"].sum()), float(ppto_df["costos"].sum())
+            sueldos_ppto, gastos_ppto = float(ppto_df["sueldos"].sum()), float(ppto_df["gastos"].sum())
+            utilidad_ppto = float(ppto_df["utilidad"].sum())
+            pa_ingresos, pa_costos = float(ppto_anual_df["ingresos"].sum()), float(ppto_anual_df["costos"].sum())
+            pa_sueldos, pa_gastos = float(ppto_anual_df["sueldos"].sum()), float(ppto_anual_df["gastos"].sum())
+            pa_utilidad = float(ppto_anual_df["utilidad"].sum())
+            cg_real = costos_real + sueldos_real + gastos_real
+            cg_ppto = costos_ppto + sueldos_ppto + gastos_ppto
+            cg_ppto_anual = pa_costos + pa_sueldos + pa_gastos
+
+            def _fila_er(nombre, real, ppto, ppto_anual, indent=False):
+                return {"Concepto": ("　" if indent else "") + nombre, "Real": fmt(real),
+                       "Presupuesto": fmt(ppto), "Var. %": pct(real / ppto - 1) if ppto else "—",
+                       "Ppto. anual (proyectado)": fmt(ppto_anual)}
+
+            filas_er = [
+                _fila_er("Ingresos", ingresos_real, ingresos_ppto, pa_ingresos),
+                _fila_er("Costos y gastos", cg_real, cg_ppto, cg_ppto_anual),
+                _fila_er("Costos de Referencia", costos_real, costos_ppto, pa_costos, indent=True),
+                _fila_er("Sueldos", sueldos_real, sueldos_ppto, pa_sueldos, indent=True),
+                _fila_er("Gastos Operativos", gastos_real, gastos_ppto, pa_gastos, indent=True),
+                _fila_er("Utilidad Operativa", utilidad_real, utilidad_ppto, pa_utilidad),
+            ]
+            st.dataframe(pd.DataFrame(filas_er), use_container_width=True, hide_index=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GASTOS POR CONCEPTO
