@@ -25,11 +25,12 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# Fuente de datos VIEJA: un solo Google Sheet multi-pestaña. SOLO la siguen
-# usando load_utilidad_operativa() y load_amex() -- las pestañas 'UTILIDAD
-# OPERATIVA'/'AMEX ALEJANDRO'/'AMEX JOSEFA' todavia no se subieron a la
-# carpeta de Drive nueva (ver DRIVE_SHEET_IDS). Compartida como "cualquiera
-# con el link" (solo lectura), lo que permite descargarla como .xlsx sin API
+# Fuente de datos VIEJA: un solo Google Sheet multi-pestaña. SOLO la sigue
+# usando load_utilidad_operativa() -- la pestaña 'UTILIDAD OPERATIVA' todavia
+# no se subio a la carpeta de Drive nueva (ver DRIVE_SHEET_IDS); AMEX
+# ALEJANDRO/JOSEFA ya migraron (2026-10-27), ver load_amex(). Compartida
+# como "cualquiera con el link" (solo lectura), lo que permite descargarla
+# como .xlsx sin API
 # key ni cuenta de servicio.
 SHEET_ID = "1F-b12XUlASAXNnhgYm5G-PRB46s2Ms9RjJ3j6Rj_QVU"
 SHEET_EXPORT_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
@@ -44,9 +45,10 @@ HOJAS_USADAS = {"emitidas": "EMITIDA", "recibidas": "RECIBIDA"}
 # link". Carpeta: https://drive.google.com/drive/folders/1kMBY_I5Mipv_-FS-ehwaeibooGMKRULg
 # IDs obtenidos inspeccionando el folder (no hay API/listado oficial sin
 # cuenta de servicio); cada archivo se descarga igual que SHEET_EXPORT_URL,
-# por su propio ID. Pendiente (dijo el usuario que los sube despues a la
-# misma carpeta): 'UTILIDAD OPERATIVA', 'AMEX ALEJANDRO', 'AMEX JOSEFA' --
-# esas 3 siguen en SHEET_ID mientras tanto.
+# por su propio ID. Pendiente (dijo el usuario que la sube despues a la
+# misma carpeta): 'UTILIDAD OPERATIVA' -- esa sigue en SHEET_ID mientras
+# tanto. AMEX ALEJANDRO/JOSEFA ya migraron (2026-10-27), mas una tarjeta
+# nueva (ANGÉLICA) que no existia antes.
 DRIVE_SHEET_IDS = {
     "emitidas_recibidas": "1Vb8jI-FPRwHRR6Of2Do9ofndp3qXlQyL1RHSsAKsyik",
     "sueldos": "15Og_BqVOOKcbv_MzUZIOAyDppqSPpcxzqp8GMHsaL4g",
@@ -54,6 +56,9 @@ DRIVE_SHEET_IDS = {
     "imile_laredo": "1fojFxD9Sjimzcq0VrwgRCwCTpVnVUILWzTmKqRh6xNM",
     "costos_de_referencia": "1KcqmhUnh1-UHGdoF53kuDujoBZtiB94L5620ZIjFq4U",
     "honorarios_josefa": "1aP8135RVRyH6qWf60SdT1mIsls5CPvVtjb3i-bkmG94",
+    "amex_alejandro": "1JNeNj6JERd13i5TZCCH1_SHY5vXv7dmUg0lUyRzS3ow",
+    "amex_josefa": "1MQyjGwAHgRSMBJdZ_HFGskhplB2tk1JdDo2oY-6tzZ0",
+    "amex_angelica": "1OewXOKinbq6cOxedrb6NIiaeF3385eCrbmzZFdtBM-0",
 }
 # El usuario pidio enfocarse SOLO en Agosto por ahora (sin logica de
 # rollover automatico mes a mes todavia -- los archivos de Drive traen el
@@ -1288,46 +1293,44 @@ UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{
 def _extraer_uuids(celda):
     return UUID_RE.findall(celda) if isinstance(celda, str) else []
 
-# En Alejandro el UUID conciliado vive en su propia columna 'uuid'; en Josefa
-# vive mezclado con notas de texto libre (ej. "11.96 DOLARES") en 'Unnamed: 10'
-# -- se extrae con el regex de arriba (patron real de UUID), no por nombre de
-# columna, para no confundir las notas con UUIDs.
-AMEX_COL_UUID = {"ALEJANDRO": "uuid", "JOSEFA": "Unnamed: 10"}
+# En Alejandro el UUID conciliado vive en su propia columna 'uuid'; en
+# Angélica en 'UUID' (mayúsculas, archivo nuevo); en Josefa vive mezclado con
+# notas de texto libre (ej. "11.96 DOLARES") en 'Unnamed: 10' -- se extrae
+# con el regex de arriba (patron real de UUID), no por nombre de columna,
+# para no confundir las notas con UUIDs.
+AMEX_COL_UUID = {"ALEJANDRO": "uuid", "JOSEFA": "Unnamed: 10", "ANGELICA": "UUID"}
 
 @st.cache_data(show_spinner=False)
 def load_amex(persona):
-    """Movimientos de tarjeta de credito corporativa AMEX (hojas 'AMEX ALEJANDRO'/
-    'AMEX JOSEFA'). PENDIENTE de migrar a la carpeta de Drive nueva
-    (DRIVE_SHEET_IDS) -- el usuario todavia no sube esas pestañas como
-    archivos aparte, asi que esta sigue leyendo del SHEET_ID viejo mientras
-    tanto. 'facturado' = se le encontro al menos un UUID conciliado --
-    no hay con que cruzarlo contra las facturas reales (emitidas/recibidas ya
-    no traen columna UUID, ver nota en descubrir_archivos), asi que es
-    simplemente si esa columna trae uno o no."""
-    hoja_nombre = f"AMEX {persona}"
+    """Movimientos de tarjeta de credito corporativa AMEX -- cada persona es
+    su propio archivo en Drive ('082026 AMEX ALEJANDRO'/'JOSEFA'/'ANGÉLICA'),
+    pestaña 'Hoja 1'. 'facturado' = se le encontro al menos un UUID
+    conciliado -- no hay con que cruzarlo contra las facturas reales
+    (emitidas/recibidas ya no traen columna UUID, ver nota en
+    descubrir_archivos), asi que es simplemente si esa columna trae uno o
+    no."""
     col_uuid = AMEX_COL_UUID[persona]
-    partes = []
-    for anio, mes, path in descubrir_archivos():
-        etiqueta = f"{MESES[mes]} {anio}" if mes else path.stem
-        hojas = {h.strip().lower(): h for h in pd.ExcelFile(path).sheet_names}
-        if hoja_nombre.lower() not in hojas:
-            continue
-        df = pd.read_excel(path, sheet_name=hojas[hoja_nombre.lower()], header=0)
-        df.columns = [str(c).strip() for c in df.columns]
-        out = pd.DataFrame(index=df.index)
-        out["proveedor"] = coalesce_col(df, "Supplier Name").map(norm_txt).fillna("SIN PROVEEDOR")
-        # 'Net Billed Amount' viene vacío cuando Charge Amount == Credit Amount
-        # (cargo abonado completo, ej. TELMEX CARGO RECURRENTE $12 cargo + $12
-        # credito) -- a pedido del usuario, ahí se usa el Charge Amount
-        # original en vez de mostrar $0.
-        monto_neto = pd.to_numeric(coalesce_col(df, "Net Billed Amount"), errors="coerce")
-        monto_cargo = pd.to_numeric(coalesce_col(df, "Charge Amount"), errors="coerce").fillna(0.0)
-        out["monto"] = monto_neto.fillna(monto_cargo)
-        out["uuids"] = coalesce_col(df, col_uuid).map(_extraer_uuids)
-        out["facturado"] = out["uuids"].map(len) > 0
-        out["anio"], out["mes"], out["periodo_label"] = anio, mes, etiqueta
-        partes.append(out)
-    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()
+    anio, mes = ANIO_ACTUAL, MES_ACTUAL
+    etiqueta = f"{MESES[mes]} {anio}"
+    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS[f"amex_{persona.lower()}"]))
+    hojas = {h.strip().lower(): h for h in pd.ExcelFile(path).sheet_names}
+    if "hoja 1" not in hojas:
+        return pd.DataFrame()
+    df = pd.read_excel(path, sheet_name=hojas["hoja 1"], header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    out = pd.DataFrame(index=df.index)
+    out["proveedor"] = coalesce_col(df, "Supplier Name").map(norm_txt).fillna("SIN PROVEEDOR")
+    # 'Net Billed Amount' viene vacío cuando Charge Amount == Credit Amount
+    # (cargo abonado completo, ej. TELMEX CARGO RECURRENTE $12 cargo + $12
+    # credito) -- a pedido del usuario, ahí se usa el Charge Amount
+    # original en vez de mostrar $0.
+    monto_neto = pd.to_numeric(coalesce_col(df, "Net Billed Amount"), errors="coerce")
+    monto_cargo = pd.to_numeric(coalesce_col(df, "Charge Amount"), errors="coerce").fillna(0.0)
+    out["monto"] = monto_neto.fillna(monto_cargo)
+    out["uuids"] = coalesce_col(df, col_uuid).map(_extraer_uuids)
+    out["facturado"] = out["uuids"].map(len) > 0
+    out["anio"], out["mes"], out["periodo_label"] = anio, mes, etiqueta
+    return out.reset_index(drop=True)
 
 try:
     df, periodos = load_data()
@@ -1338,6 +1341,7 @@ try:
     imile_laredo_extra_df = load_imile_laredo_extra()
     amex_alejandro_df = load_amex("ALEJANDRO")
     amex_josefa_df = load_amex("JOSEFA")
+    amex_angelica_df = load_amex("ANGELICA")
 except Exception as e:
     st.error(f"Error al descargar/leer los datos de Google Sheets:\n\n`{SHEET_EXPORT_URL}`\n\n{e}")
     st.stop()
@@ -2340,9 +2344,11 @@ def _nomina_payload():
 def _tarjeta_payload():
     """Datos de 'Tarjeta de Crédito' para el componente React -- misma logica
     de agrupacion que el bloque viejo (dona anidada + KPIs + gauge), uno por
-    tarjetahabiente (Alejandro/Josefa)."""
+    tarjetahabiente (Alejandro/Josefa/Angélica -- esta ultima se agrego
+    2026-10-27 cuando el usuario subio su archivo AMEX a Drive)."""
     resultado = []
-    for nombre, amex_df in [("Alejandro", amex_alejandro_df), ("Josefa", amex_josefa_df)]:
+    for nombre, amex_df in [("Alejandro", amex_alejandro_df), ("Josefa", amex_josefa_df),
+                            ("Angélica", amex_angelica_df)]:
         amex_f = amex_df[amex_df["periodo_label"].isin(sel_labels)] if not amex_df.empty else amex_df
         if amex_f.empty:
             resultado.append({"nombre": nombre, "tiene_datos": False})
