@@ -90,6 +90,26 @@ select.aduana-select {
 .breadcrumb-sep { color: #b7c0c9; }
 .breadcrumb-item { cursor: pointer; text-decoration: underline; }
 .breadcrumb-item.actual { cursor: default; font-weight: 700; color: var(--azul); text-decoration: none; }
+
+/* Telefono: todo grid de 2+ columnas se apila a 1 sola (las columnas con
+   ancho fijo en px, como la dona de Tarjeta de Credito a 480px, tambien
+   quedan cubiertas por el !important). Las tablas anchas (Estado de
+   Resultados, detalle de conceptos) se dejan scrollear horizontal dentro
+   de su propia tarjeta en vez de romper el layout de la pagina. */
+@media (max-width: 760px) {
+  #root { padding: 12px 12px 30px; }
+  .topnav { gap: 2px; }
+  .topnav button { padding: 6px 10px; font-size: 12px; }
+  .dash-header { flex-direction: column; align-items: flex-start; }
+  .dash-header h1 { font-size: 19px; }
+  .grid-row { grid-template-columns: 1fr !important; }
+  .donut-detalle-row { flex-direction: column; }
+  .donut-detalle-row > div:first-child { flex: none !important; width: 220px !important; margin: 0 auto; }
+  .card { overflow-x: auto; }
+  .dtable { font-size: 11.5px; }
+  .rank-name { width: 92px; }
+  .rank-val { width: 72px; }
+}
 </style>
 </head>
 <body>
@@ -236,7 +256,7 @@ function DonutDetalleCard(props) {
   return h("div", { className: "card" },
     h(CardHeader, { icono: "chart", titulo }),
     h("p", { className: "card-subtitle" }, subtitulo),
-    h("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+    h("div", { className: "donut-detalle-row", style: { display: "flex", gap: 10, alignItems: "center" } },
       h("div", { style: { flex: "0 0 36%", position: "relative" } },
         h("div", { style: { height: 170 } },
           h(ResponsiveContainer, { width: "100%", height: "100%" },
@@ -393,7 +413,7 @@ function ResumenAduanaGastosCard(props) {
     h(CardHeader, { icono: "pin", titulo: "Resumen de la aduana" }),
     h("select", { className: "aduana-select", value: aduanaSel, onChange: (e) => setAduana(e.target.value) },
       opciones.map((a) => h("option", { key: a, value: a }, a))),
-    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
+    h("div", { className: "grid-row", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
         h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Gasto total del mes"))),
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.hex),
@@ -413,7 +433,7 @@ function ResumenAduanaIngresosCard(props) {
     h(CardHeader, { icono: "pin", titulo: "Resumen de la aduana" }),
     h("select", { className: "aduana-select", value: aduanaSel, onChange: (e) => setAduana(e.target.value) },
       opciones.map((a) => h("option", { key: a, value: a }, a))),
-    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+    h("div", { className: "grid-row", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
         h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Ingreso total del mes"))),
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.list),
@@ -791,7 +811,7 @@ function TarjetaCreditoPage(props) {
       h(CardHeader, { icono: "money", titulo: persona.nombre }),
       !persona.tiene_datos
         ? h("div", { className: "empty-state" }, `Sin movimientos de ${persona.nombre} para el periodo seleccionado.`)
-        : h("div", { style: { display: "grid", gridTemplateColumns: "480px 1fr", gap: 16, marginTop: 10, alignItems: "start" } },
+        : h("div", { className: "grid-row tarjeta-dona-row", style: { display: "grid", gridTemplateColumns: "480px 1fr", gap: 16, marginTop: 10, alignItems: "start" } },
             h(DonaAnidadaTarjeta, { montoFacturado: persona.monto_facturado, montoNoFacturado: persona.monto_no_facturado,
               porProveedor: persona.por_proveedor, colorFact: colores.azul, colorNoFact: colores.neg }),
             h("div", {},
