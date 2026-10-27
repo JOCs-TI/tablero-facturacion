@@ -773,7 +773,7 @@ function DonaAnidadaTarjeta(props) {
         h("span", { style: { width: 10, height: 10, borderRadius: 2, background: colorFact, display: "inline-block" } }), "Facturado"),
       h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--sub)" } },
         h("span", { style: { width: 10, height: 10, borderRadius: 2, background: colorNoFact, display: "inline-block" } }), "No Facturado")),
-    h("div", { style: { height: 380 } },
+    h("div", { style: { height: 440 } },
       h(ResponsiveContainer, { width: "100%", height: "100%" },
         h(PieChart, {},
           h(Tooltip, { content: h(TooltipDona) }),
@@ -791,7 +791,7 @@ function TarjetaCreditoPage(props) {
       h(CardHeader, { icono: "money", titulo: persona.nombre }),
       !persona.tiene_datos
         ? h("div", { className: "empty-state" }, `Sin movimientos de ${persona.nombre} para el periodo seleccionado.`)
-        : h("div", { style: { display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, marginTop: 10 } },
+        : h("div", { style: { display: "grid", gridTemplateColumns: "480px 1fr", gap: 16, marginTop: 10, alignItems: "start" } },
             h(DonaAnidadaTarjeta, { montoFacturado: persona.monto_facturado, montoNoFacturado: persona.monto_no_facturado,
               porProveedor: persona.por_proveedor, colorFact: colores.azul, colorNoFact: colores.neg }),
             h("div", {},
