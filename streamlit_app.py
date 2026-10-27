@@ -1494,7 +1494,11 @@ costos_ref_f = _filtra_periodo_aduana(costos_ref_df)
 utilidad_op_f = _filtra_periodo_aduana(utilidad_op_df)
 imile_laredo_extra_f = _filtra_periodo_aduana(imile_laredo_extra_df)
 
-EM = d[d["tipo_factura"] == "EMITIDA"]
+# IMILE AIFA se excluye de Emitidas: el usuario avisó que esas filas no son
+# del mes correcto (se filtran aquí, no en origen, porque no hay columna de
+# fecha confiable para aislar solo las filas viejas -- se descarta la aduana
+# completa de Emitidas por ahora). No afecta Recibidas ni ninguna otra hoja.
+EM = d[(d["tipo_factura"] == "EMITIDA") & (d["aduana"] != "IMILE AIFA")]
 REC = d[d["tipo_factura"] == "RECIBIDA"]
 
 TOT_EM = EM["importe"].sum()
