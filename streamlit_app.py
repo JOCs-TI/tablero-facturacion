@@ -1,3 +1,4 @@
+import itertools
 import json
 import math
 import re
@@ -1535,12 +1536,46 @@ def _dash_badge(delta_txt, positivo):
     flecha = "▲" if positivo else ("▼" if positivo is False else "")
     return f'<span class="badge {cls}">{flecha} {delta_txt}</span>'
 
+_dash_id_counter = itertools.count()
+
+def _next_id(prefix):
+    """IDs unicos para los <div> donde monta cada grafica Recharts -- hace
+    falta porque ahora varias graficas conviven en UN SOLO documento HTML
+    (ver render_pagina_html), no una por iframe como antes."""
+    return f"{prefix}-{next(_dash_id_counter)}"
+
 def html_card(body_html, height):
+    """Unico uso que queda: paginas viejas (Utilidad Operativa) que siguen
+    incrustando una tarjeta por iframe. Gastos/Ingresos ya NO llaman esto --
+    usan render_pagina_html() para fundir todas las tarjetas en un solo
+    documento (a pedido del usuario: nada de 'varios Streamlit pegados',
+    un layout real de pagina)."""
     components.html(f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
                     f"<style>{DASH_CSS}</style></head><body>{body_html}</body></html>",
                     height=height, scrolling=False)
 
-def stat_grid_card_html(cards, height=130):
+def render_pagina_html(filas, extra_script=""):
+    """Arma UNA sola pagina HTML/CSS (+Recharts) a partir de 'filas': lista de
+    filas, cada una lista de (ancho_fr, fragmento_html, alto_px). Un solo
+    components.html() para toda la pagina -- sin huecos/alineacion rara entre
+    iframes sueltos ni de st.columns, que es justo lo que se pidio evitar."""
+    scripts = [extra_script] if extra_script else []
+    filas_html = []
+    alto_total = 0
+    for fila in filas:
+        cols_css = " ".join(f"{ancho}fr" for ancho, _, _ in fila)
+        alto_fila = max(alto for _, _, alto in fila)
+        celdas = "".join(f'<div style="height:{alto}px;overflow:hidden;">{html}</div>'
+                         for _, html, alto in fila)
+        filas_html.append(f'<div style="display:grid;grid-template-columns:{cols_css};'
+                          f'gap:16px;margin-bottom:16px;">{celdas}</div>')
+        alto_total += alto_fila + 16
+    doc = (f"<!DOCTYPE html><html><head><meta charset='utf-8'><style>{DASH_CSS}</style></head>"
+          f"<body>{''.join(filas_html)}</body>{RECHARTS_CDN}"
+          f"<script>{RECHARTS_FMT_JS}{''.join(scripts)}</script></html>")
+    components.html(doc, height=alto_total + 10, scrolling=False)
+
+def stat_grid_card_html(cards):
     """'cards': lista de dicts {icono, label, valor, sub (opcional), delta_txt
     (opcional), delta_pos (True/False/None -> verde/rojo/gris)}."""
     items = "".join(f"""
@@ -1551,9 +1586,9 @@ def stat_grid_card_html(cards, height=130):
         {_dash_badge(c.get('delta_txt'), c.get('delta_pos'))}
         {f'<div class="stat-sub">{c["sub"]}</div>' if c.get('sub') else ''}
       </div>""" for c in cards)
-    html_card(f'<div class="stat-grid">{items}</div>', height)
+    return f'<div class="stat-grid" style="height:100%;">{items}</div>', ""
 
-def header_bar_html(icono, titulo, subtitulo, periodo_txt, anio_txt, filtros_txt, height=80):
+def header_bar_html(icono, titulo, subtitulo, periodo_txt, anio_txt, filtros_txt):
     """Encabezado de pagina: icono+titulo+subtitulo a la izquierda, 'pills' de
     Periodo/Año/Filtros a la derecha -- reflejan el filtro global real del
     sidebar (no son controles nuevos; evita duplicar filtros no funcionales)."""
@@ -1572,7 +1607,7 @@ def header_bar_html(icono, titulo, subtitulo, periodo_txt, anio_txt, filtros_txt
             <span><span class="fp-label">Filtros</span><span class="fp-value">{filtros_txt}</span></span></div>
         </div>
       </div>"""
-    html_card(body, height)
+    return body, ""
 
 def _chart_card_shell(icono, titulo, subtitulo, chart_div_id, extra_note, height, chart_height):
     return f"""
@@ -1588,13 +1623,17 @@ def chart_bar_card_html(icono, titulo, subtitulo, categorias, serie_real, serie_
                         height=360):
     """Grafica de barras agrupadas Real vs Presupuesto (Recharts) -- funciona
     igual con 1 categoria que con 12; hoy solo hay el mes real cargado, asi
-    que se ve una sola categoria (nota debajo lo aclara)."""
+    que se ve una sola categoria (nota debajo lo aclara). Devuelve (html,
+    script): varias de estas conviven en el mismo documento (ver
+    render_pagina_html), cada una en su propio IIFE para no chocar variables."""
+    div_id = _next_id("bar")
     data = [{"cat": c, "real": float(r), "ppto": float(p)}
             for c, r, p in zip(categorias, serie_real, serie_ppto)]
-    render_js = f"""
+    script = f"""(function() {{
 const h = React.createElement;
 const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend }} = Recharts;
-const root = ReactDOM.createRoot(document.getElementById('bar-root'));
+const data = {json.dumps(data)};
+const root = ReactDOM.createRoot(document.getElementById('{div_id}'));
 root.render(
   h(ResponsiveContainer, {{ width: '100%', height: '100%' }},
     h(BarChart, {{ data: data, margin: {{ top: 6, right: 10, left: 0, bottom: 0 }} }},
@@ -1612,22 +1651,23 @@ root.render(
     )
   )
 );
+}})();
 """
-    body = (_chart_card_shell(icono, titulo, subtitulo, "bar-root", extra_note, height, height - 90)
-           + f"{RECHARTS_CDN}<script>{RECHARTS_FMT_JS}const data = {json.dumps(data)};{render_js}</script>")
-    html_card(body, height)
+    return _chart_card_shell(icono, titulo, subtitulo, div_id, extra_note, height, height - 90), script
 
 def chart_line_card_html(icono, titulo, subtitulo, categorias, serie_real, serie_ppto,
                          nombre_real, nombre_ppto, color_real, color_ppto, extra_note="",
                          height=360, formato_pct=False):
+    div_id = _next_id("line")
     data = [{"cat": c, "real": float(r), "ppto": float(p)}
             for c, r, p in zip(categorias, serie_real, serie_ppto)]
     formatter = "(v) => (v*100).toFixed(1) + '%'" if formato_pct else "fmtMoney"
     axis_fmt = "(v) => (v*100).toFixed(1) + '%'" if formato_pct else "fmtMoney"
-    render_js = f"""
+    script = f"""(function() {{
 const h = React.createElement;
 const {{ ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend }} = Recharts;
-const root = ReactDOM.createRoot(document.getElementById('line-root'));
+const data = {json.dumps(data)};
+const root = ReactDOM.createRoot(document.getElementById('{div_id}'));
 root.render(
   h(ResponsiveContainer, {{ width: '100%', height: '100%' }},
     h(LineChart, {{ data: data, margin: {{ top: 6, right: 10, left: 0, bottom: 0 }} }},
@@ -1645,22 +1685,21 @@ root.render(
     )
   )
 );
+}})();
 """
-    body = (_chart_card_shell(icono, titulo, subtitulo, "line-root", extra_note, height, height - 90)
-           + f"{RECHARTS_CDN}<script>{RECHARTS_FMT_JS}const data = {json.dumps(data)};{render_js}</script>")
-    html_card(body, height)
+    return _chart_card_shell(icono, titulo, subtitulo, div_id, extra_note, height, height - 90), script
 
-def empty_state_card_html(icono, titulo, subtitulo, mensaje, height=260):
+def empty_state_card_html(icono, titulo, subtitulo, mensaje):
     body = f"""
       <div class="card">
         <div class="card-header">{_dash_icono(icono)}<p class="card-title">{titulo}</p></div>
         <p class="card-subtitle">{subtitulo}</p>
         <div class="empty-state">{mensaje}</div>
       </div>"""
-    html_card(body, height)
+    return body, ""
 
 def donut_detalle_card_html(titulo_dona, subtitulo_dona, dona_serie, total_txt, subtotal_txt,
-                            titulo_tabla, titulo_col1, tabla_df, height=560):
+                            titulo_tabla, titulo_col1, tabla_df):
     """Tarjeta 'Composicion ... por concepto': dona (Recharts PieChart) + mini
     tabla a un lado (Concepto/Gasto/%Part/Var. vs. ant.), y debajo la tabla de
     detalle completa (+Gasto anterior/Var.$/Var.%) -- replica las 2 tablas del
@@ -1690,10 +1729,12 @@ def donut_detalle_card_html(titulo_dona, subtitulo_dona, dona_serie, total_txt, 
                  f'<td class="num">100%</td><td class="num">—</td><td class="num">—</td>'
                  f'<td class="num">—</td></tr>')
 
-    render_js = f"""
+    div_id = _next_id("dona")
+    script = f"""(function() {{
 const h = React.createElement;
 const {{ ResponsiveContainer, PieChart, Pie, Cell, Tooltip }} = Recharts;
-const root = ReactDOM.createRoot(document.getElementById('dona-root'));
+const data = {json.dumps(data)};
+const root = ReactDOM.createRoot(document.getElementById('{div_id}'));
 root.render(
   h(ResponsiveContainer, {{ width: '100%', height: '100%' }},
     h(PieChart, {{}},
@@ -1705,6 +1746,7 @@ root.render(
     )
   )
 );
+}})();
 """
     body = f"""
       <div class="card">
@@ -1712,7 +1754,7 @@ root.render(
         <p class="card-subtitle">{subtitulo_dona}</p>
         <div style="display:flex;gap:10px;align-items:center;">
           <div style="flex:0 0 36%;position:relative;">
-            <div id="dona-root" style="height:170px;"></div>
+            <div id="{div_id}" style="height:170px;"></div>
             <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
                  text-align:center;pointer-events:none;">
               <div style="font-size:13px;font-weight:800;color:{JOCS_AZUL};">{total_txt}</div>
@@ -1739,15 +1781,11 @@ root.render(
             {fila_total}
           </table>
         </div>
-      </div>
-      {RECHARTS_CDN}
-      <script>{RECHARTS_FMT_JS}
-      const data = {json.dumps(data)};
-      {render_js}</script>"""
-    html_card(body, height)
+      </div>"""
+    return body, script
 
 def ranking_concentracion_card_html(titulo, subtitulo, badge_txt, serie_top, color, etq_contraparte,
-                                    etq_contraparte_sing, height=620):
+                                    etq_contraparte_sing):
     """Tarjeta 'Principales proveedores/clientes' (ranking con barra) +
     'Concentracion' (3 metricas), mismo iframe -- replica bar_h_recharts en
     HTML/CSS puro (mas facil de alinear pixel a pixel con el mockup que
@@ -1787,7 +1825,7 @@ def ranking_concentracion_card_html(titulo, subtitulo, badge_txt, serie_top, col
           </div>
         </div>
       </div>"""
-    html_card(body, height)
+    return body, ""
 
 def _analisis_flujo_datos(es_ingreso):
     """Prepara las variables compartidas por ambas paginas (mismos calculos de
@@ -1807,22 +1845,23 @@ def _analisis_flujo_datos(es_ingreso):
                tiene_ppto=tiene_ppto, ppto_mes_tot=ppto_mes_tot, ppto_acum_tot=ppto_acum_tot,
                cumplimiento=cumplimiento, mes_txt=mes_txt)
 
-def _dash_header(icono, titulo, subtitulo):
+def _dash_header_frag(icono, titulo, subtitulo):
     anios = sorted({p.anio for p in periodos}) if periodos else []
     n_filtros = len(sel_labels) + (len(aduanas_sel_global) if aduanas_sel_global else 0)
-    header_bar_html(icono, titulo, subtitulo,
-                    ", ".join(sel_labels) if sel_labels else "—",
-                    ", ".join(str(a) for a in anios) if anios else "—",
-                    f"{n_filtros} seleccionados" if n_filtros else "Todos", height=80)
+    return header_bar_html(
+        icono, titulo, subtitulo,
+        ", ".join(sel_labels) if sel_labels else "—",
+        ", ".join(str(a) for a in anios) if anios else "—",
+        f"{n_filtros} seleccionados" if n_filtros else "Todos")
+
+def _nota_pendientes():
     st.caption(("Solo PROPIOS" if SOLO_PROPIOS else "Todos los tipos") +
               " · Acumulado, comparativo contra el mes/año anterior y evolución mensual "
               "pendientes de cargar histórico real mes a mes (hoy solo hay un mes de datos "
               "reales en vivo); se muestran como \"No disponible\"/\"—\" en vez de inventarse.")
 
-def _composicion_y_ranking(base_df, etq_titulo, etq_sing, etq_contraparte, etq_contraparte_sing,
-                           color_real, tot_mes, campo_concepto, nota_concepto):
-    if nota_concepto:
-        st.caption(nota_concepto)
+def _composicion_y_ranking_filas(base_df, etq_titulo, etq_sing, etq_contraparte, etq_contraparte_sing,
+                                 color_real, tot_mes, campo_concepto):
     conc = base_df.copy()
     conc[campo_concepto] = conc[campo_concepto].fillna("Sin categorizar")
     por_concepto_pos = conc.groupby(campo_concepto)["importe"].sum()
@@ -1830,133 +1869,176 @@ def _composicion_y_ranking(base_df, etq_titulo, etq_sing, etq_contraparte, etq_c
     por_contraparte = base_df.groupby("contraparte")["importe"].sum()
     por_contraparte = por_contraparte[por_contraparte > 0].sort_values(ascending=False)
 
-    col_izq, col_der = st.columns(2)
-    with col_izq:
-        if por_concepto_pos.empty:
-            st.info("Sin conceptos para mostrar.")
-        else:
-            tabla_concepto = por_concepto_pos.reset_index()
-            tabla_concepto.columns = ["Concepto", "Monto"]
-            dona_serie = por_concepto_pos.head(6)
-            if len(por_concepto_pos) > 6:
-                dona_serie = pd.concat([dona_serie, pd.Series({"Otros": por_concepto_pos.iloc[6:].sum()})])
-            donut_detalle_card_html(
-                f"Composición de {etq_titulo.lower()} por concepto",
-                "Participación sobre el total y variación vs. periodo anterior", dona_serie, fmt_m(tot_mes),
-                f"{etq_sing} total", f"Detalle de {etq_titulo.lower()} por concepto", "Concepto",
-                tabla_concepto, height=600)
-    with col_der:
-        if por_contraparte.empty:
-            st.info(f"Sin {etq_contraparte.lower()} identificados.")
-        else:
-            top10 = por_contraparte.head(10)
-            ranking_concentracion_card_html(
-                f"Principales {etq_contraparte.lower()} por {etq_sing.lower()}",
-                f"Top 10 {etq_contraparte.lower()} del periodo", "Top 10", top10, color_real,
-                etq_contraparte, etq_contraparte_sing, height=680)
+    celda_izq = ("", "")
+    if por_concepto_pos.empty:
+        celda_izq = ('<div class="card empty-state">Sin conceptos para mostrar.</div>', "")
+    else:
+        tabla_concepto = por_concepto_pos.reset_index()
+        tabla_concepto.columns = ["Concepto", "Monto"]
+        dona_serie = por_concepto_pos.head(6)
+        if len(por_concepto_pos) > 6:
+            dona_serie = pd.concat([dona_serie, pd.Series({"Otros": por_concepto_pos.iloc[6:].sum()})])
+        celda_izq = donut_detalle_card_html(
+            f"Composición de {etq_titulo.lower()} por concepto",
+            "Participación sobre el total y variación vs. periodo anterior", dona_serie, fmt_m(tot_mes),
+            f"{etq_sing} total", f"Detalle de {etq_titulo.lower()} por concepto", "Concepto", tabla_concepto)
+
+    celda_der = ("", "")
+    if por_contraparte.empty:
+        celda_der = (f'<div class="card empty-state">Sin {etq_contraparte.lower()} identificados.</div>', "")
+    else:
+        top10 = por_contraparte.head(10)
+        celda_der = ranking_concentracion_card_html(
+            f"Principales {etq_contraparte.lower()} por {etq_sing.lower()}",
+            f"Top 10 {etq_contraparte.lower()} del periodo", "Top 10", top10, color_real,
+            etq_contraparte, etq_contraparte_sing)
+    return [(1, celda_izq[0], 600), (1, celda_der[0], 680)], celda_izq[1] + celda_der[1]
+
+def _resumen_aduana_gastos_frag(d, base_df, aduana_sel):
+    base_aduana = base_df[base_df["aduana"] == aduana_sel]
+    tot_aduana = float(base_aduana["importe"].sum())
+    cr_aduana = (costos_ref_f.loc[costos_ref_f["aduana"] == aduana_sel, "monto"].sum()
+                if not costos_ref_f.empty else 0.0)
+    return f"""
+      <div class="card">
+        <div class="card-header">{_dash_icono('pin')}<p class="card-title">Resumen de la aduana</p></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px;">
+          <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['doc']}</div>
+            <div><div class="mini-val">{fmt(tot_aduana)}</div>
+            <div class="mini-label">Gasto total del mes</div></div></div>
+          <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['hex']}</div>
+            <div><div class="mini-val">{fmt(cr_aduana)}</div>
+            <div class="mini-label">Costos de referencia · {pct(cr_aduana/tot_aduana) if tot_aduana else '—'} del gasto</div></div></div>
+          <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['list']}</div>
+            <div><div class="mini-val">{len(base_aduana):,}</div>
+            <div class="mini-label">Número de operaciones</div></div></div>
+          <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['chart']}</div>
+            <div><div class="mini-val">{pct(tot_aduana/d['tot_mes']) if d['tot_mes'] else '—'}</div>
+            <div class="mini-label">% del gasto total</div></div></div>
+        </div>
+      </div>"""
 
 def pagina_analisis_gastos():
     """'Análisis de gastos por aduana' -- clon de la estructura del mockup del
     usuario (2026-10-27): mismo orden/proporcion de tarjetas que la imagen,
-    fila por fila. Ver _analisis_flujo_datos() para los calculos compartidos
-    con Ingresos, y la nota sobre datos pendientes en _dash_header()."""
+    fundidas en UN documento HTML por bloque (no un iframe de Recharts por
+    tarjeta ni st.columns de por medio) -- el usuario pidio explicitamente
+    "no uses Streamlit, usa lo necesario para que quede igual". Lo unico que
+    se queda nativo es el selector de Aduana (components.html no puede
+    devolver un clic/seleccion a Python sin un componente bidireccional, ver
+    [[feedback-respetar-referencias-visuales]])."""
     d = _analisis_flujo_datos(es_ingreso=False)
     base_df = d["base_df"]
-    _dash_header("chart", "Análisis de gastos por aduana",
-                 "Comportamiento, composición y principales proveedores de gastos")
+    header_html, _ = _dash_header_frag("chart", "Análisis de gastos por aduana",
+                                       "Comportamiento, composición y principales proveedores de gastos")
     if base_df.empty:
+        render_pagina_html([[(1, header_html, 80)]])
+        _nota_pendientes()
         st.info("Sin gastos para el periodo y aduana seleccionados.")
         return
 
-    st.write("")
-    col_ev, col_kpi = st.columns([1.4, 1])
-    with col_ev:
-        chart_bar_card_html("chart", "Evolución de gastos", "Gasto real vs. presupuesto mensual",
-                            [d["mes_txt"]], [d["tot_mes"]], [d["ppto_mes_tot"] or 0],
-                            "Gasto real", "Presupuesto", JOCS_AZUL, "#9DBFE8",
-                            extra_note="1 de 12 meses cargados · se completa con más histórico",
-                            height=340)
-    with col_kpi:
-        stat_grid_card_html([
-            {"icono": "money", "label": "Gasto del mes", "valor": fmt(d["tot_mes"]), "sub": d["mes_txt"]},
-            {"icono": "stack", "label": "Gasto acumulado", "valor": "No disponible"},
-            {"icono": "target", "label": "Presupuesto del mes",
-             "valor": fmt(d["ppto_mes_tot"]) if d["ppto_mes_tot"] else "No disponible",
-             "delta_txt": f"{d['cumplimiento']*100:.0f}% de cumplimiento" if d["cumplimiento"] is not None else None,
-             "delta_pos": (d["cumplimiento"] >= 1.0) if d["cumplimiento"] is not None else None},
-            {"icono": "trend", "label": "Presupuesto acumulado",
-             "valor": fmt(d["ppto_acum_tot"]) if d["ppto_acum_tot"] else "No disponible"},
-        ], height=340)
-
-    st.write("")
-    stat_grid_card_html([
+    ev_html, ev_script = chart_bar_card_html(
+        "chart", "Evolución de gastos", "Gasto real vs. presupuesto mensual",
+        [d["mes_txt"]], [d["tot_mes"]], [d["ppto_mes_tot"] or 0], "Gasto real", "Presupuesto",
+        JOCS_AZUL, "#9DBFE8", extra_note="1 de 12 meses cargados · se completa con más histórico",
+        height=340)
+    kpi_html, _ = stat_grid_card_html([
+        {"icono": "money", "label": "Gasto del mes", "valor": fmt(d["tot_mes"]), "sub": d["mes_txt"]},
+        {"icono": "stack", "label": "Gasto acumulado", "valor": "No disponible"},
+        {"icono": "target", "label": "Presupuesto del mes",
+         "valor": fmt(d["ppto_mes_tot"]) if d["ppto_mes_tot"] else "No disponible",
+         "delta_txt": f"{d['cumplimiento']*100:.0f}% de cumplimiento" if d["cumplimiento"] is not None else None,
+         "delta_pos": (d["cumplimiento"] >= 1.0) if d["cumplimiento"] is not None else None},
+        {"icono": "trend", "label": "Presupuesto acumulado",
+         "valor": fmt(d["ppto_acum_tot"]) if d["ppto_acum_tot"] else "No disponible"},
+    ])
+    fila2_html, _ = stat_grid_card_html([
         {"icono": "people", "label": "Proveedores activos", "valor": f"{d['n_contrapartes']:,}"},
         {"icono": "gauge", "label": "Resultado operativo", "valor": fmt(MARGEN),
          "delta_txt": f"Margen {MARGEN_PCT*100:.1f}%" if MARGEN_PCT is not None else None,
          "delta_pos": (MARGEN_PCT >= 0) if MARGEN_PCT is not None else None},
         {"icono": "trend", "label": "Variación vs. mes anterior", "valor": "No disponible"},
-    ], height=135)
+    ])
+    variacion = (d["tot_mes"] / d["ppto_mes_tot"] - 1) if d["ppto_mes_tot"] else 0.0
+    tend_html, tend_script = chart_line_card_html(
+        "trend", "Tendencia de gasto", "Variación mensual del gasto real vs. presupuesto",
+        [d["mes_txt"]], [variacion], [0.0], "Gasto real", "Presupuesto", JOCS_AZUL, "#9DBFE8",
+        formato_pct=True, extra_note="1 de 12 meses cargados · se completa con más histórico",
+        height=340)
 
-    st.write("")
-    col_tend, col_aduana = st.columns([1.4, 1])
-    with col_tend:
-        variacion = (d["tot_mes"] / d["ppto_mes_tot"] - 1) if d["ppto_mes_tot"] else 0.0
-        chart_line_card_html("trend", "Tendencia de gasto", "Variación mensual del gasto real vs. presupuesto",
-                             [d["mes_txt"]], [variacion], [0.0], "Gasto real", "Presupuesto",
-                             JOCS_AZUL, "#9DBFE8", formato_pct=True,
-                             extra_note="1 de 12 meses cargados · se completa con más histórico",
-                             height=340)
-    with col_aduana:
-        aduanas_disp = sorted(base_df["aduana"].dropna().unique().tolist())
-        if not aduanas_disp:
-            empty_state_card_html("pin", "Resumen de la aduana", "", "Sin aduanas con actividad.", height=340)
-        else:
-            aduana_sel = st.selectbox("Aduana", aduanas_disp, key="resumen_aduana_gastos")
-            base_aduana = base_df[base_df["aduana"] == aduana_sel]
-            tot_aduana = float(base_aduana["importe"].sum())
-            cr_aduana = (costos_ref_f.loc[costos_ref_f["aduana"] == aduana_sel, "monto"].sum()
-                        if not costos_ref_f.empty else 0.0)
-            body = f"""
-              <div class="card">
-                <div class="card-header">{_dash_icono('pin')}<p class="card-title">Resumen de la aduana</p></div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px;">
-                  <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['doc']}</div>
-                    <div><div class="mini-val">{fmt(tot_aduana)}</div>
-                    <div class="mini-label">Gasto total del mes</div></div></div>
-                  <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['hex']}</div>
-                    <div><div class="mini-val">{fmt(cr_aduana)}</div>
-                    <div class="mini-label">Costos de referencia · {pct(cr_aduana/tot_aduana) if tot_aduana else '—'} del gasto</div></div></div>
-                  <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['list']}</div>
-                    <div><div class="mini-val">{len(base_aduana):,}</div>
-                    <div class="mini-label">Número de operaciones</div></div></div>
-                  <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['chart']}</div>
-                    <div><div class="mini-val">{pct(tot_aduana/d['tot_mes']) if d['tot_mes'] else '—'}</div>
-                    <div class="mini-label">% del gasto total</div></div></div>
-                </div>
-              </div>"""
-            html_card(body, 260)
+    render_pagina_html([
+        [(1, header_html, 80)],
+        [(1.4, ev_html, 340), (1, kpi_html, 340)],
+        [(1, fila2_html, 135)],
+    ], extra_script=ev_script)
+    _nota_pendientes()
 
-    st.write("")
-    _composicion_y_ranking(base_df, "Gastos", "Gasto", "Proveedores", "Proveedor", JOCS_AZUL,
-                           d["tot_mes"], "concepto_cierre",
-                           (f"Solo el **{cobertura_concepto*100:.0f}%** del gasto trae un concepto de cierre "
-                            "asignado en el Excel de origen; el resto aparece como 'Sin categorizar'."
-                            if cobertura_concepto < 0.95 else None))
+    aduanas_disp = sorted(base_df["aduana"].dropna().unique().tolist())
+    if not aduanas_disp:
+        render_pagina_html([[(1, tend_html, 340)]], extra_script=tend_script)
+        st.info("Sin aduanas con actividad.")
+    else:
+        aduana_sel = st.selectbox("Aduana", aduanas_disp, key="resumen_aduana_gastos")
+        aduana_html = _resumen_aduana_gastos_frag(d, base_df, aduana_sel)
+        filas_cr, script_cr = _composicion_y_ranking_filas(
+            base_df, "Gastos", "Gasto", "Proveedores", "Proveedor", JOCS_AZUL, d["tot_mes"], "concepto_cierre")
+        if cobertura_concepto < 0.95:
+            st.caption(f"Solo el **{cobertura_concepto*100:.0f}%** del gasto trae un concepto de cierre "
+                      "asignado en el Excel de origen; el resto aparece como 'Sin categorizar'.")
+        render_pagina_html([
+            [(1.4, tend_html, 340), (1, aduana_html, 340)],
+            filas_cr,
+        ], extra_script=tend_script + script_cr)
+
+def _resumen_aduana_ingresos_frag(base_df, aduana_sel):
+    base_aduana = base_df[base_df["aduana"] == aduana_sel]
+    tot_aduana = float(base_aduana["importe"].sum())
+    por_desc = (base_aduana.groupby("descripcion")["importe"].sum()
+               .sort_values(ascending=False)) if not base_aduana.empty else pd.Series(dtype=float)
+    top_conceptos = por_desc.head(3)
+    otros_val = float(por_desc.iloc[3:].sum()) if len(por_desc) > 3 else 0.0
+    filas_concepto = "".join(
+        f'<div style="display:flex;justify-content:space-between;font-size:11.5px;'
+        f'margin-bottom:5px;"><span style="color:{DASH_TEXT};overflow:hidden;'
+        f'text-overflow:ellipsis;white-space:nowrap;max-width:160px;">{c}</span>'
+        f'<span style="color:{DASH_SUBTEXT};font-weight:600;">{f"{v/tot_aduana*100:.1f}%" if tot_aduana else "—"}</span></div>'
+        for c, v in top_conceptos.items())
+    if otros_val:
+        filas_concepto += (f'<div style="display:flex;justify-content:space-between;font-size:11.5px;">'
+                           f'<span style="color:{DASH_TEXT};">Otros conceptos</span>'
+                           f'<span style="color:{DASH_SUBTEXT};font-weight:600;">{f"{otros_val/tot_aduana*100:.1f}%" if tot_aduana else "—"}</span></div>')
+    return f"""
+      <div class="card">
+        <div class="card-header">{_dash_icono('pin')}<p class="card-title">Resumen de la aduana</p></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:10px 0 14px;">
+          <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['doc']}</div>
+            <div><div class="mini-val">{fmt(tot_aduana)}</div>
+            <div class="mini-label">Ingreso total del mes</div></div></div>
+          <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['list']}</div>
+            <div><div class="mini-val">{len(base_aduana):,}</div>
+            <div class="mini-label">Número de operaciones</div></div></div>
+        </div>
+        <p class="card-title" style="font-size:12.5px;margin:0 0 8px;">Ingresos por concepto (mes)</p>
+        {filas_concepto if filas_concepto else '<div style="color:' + DASH_SUBTEXT + ';font-size:12px;">Sin datos.</div>'}
+      </div>"""
 
 def pagina_analisis_ingresos():
     """'Análisis de Ingresos' -- el mockup usa una disposición distinta a la de
     Gastos (4 tarjetas en una sola fila arriba, fila angosta-grafica-angosta
-    despues), por eso es su propia funcion y no un parametro de la de Gastos."""
+    despues), por eso es su propia funcion y no un parametro de la de Gastos.
+    Igual que Gastos, todo vive en documentos HTML fundidos -- el selector de
+    Aduana es el unico control nativo (ver nota en pagina_analisis_gastos)."""
     d = _analisis_flujo_datos(es_ingreso=True)
     base_df = d["base_df"]
-    _dash_header("chart", "Análisis de Ingresos",
-                 "Comportamiento, composición y principales generadores de ingresos")
+    header_html, _ = _dash_header_frag("chart", "Análisis de Ingresos",
+                                       "Comportamiento, composición y principales generadores de ingresos")
     if base_df.empty:
+        render_pagina_html([[(1, header_html, 80)]])
+        _nota_pendientes()
         st.info("Sin ingresos para el periodo y aduana seleccionados.")
         return
 
-    st.write("")
-    stat_grid_card_html([
+    kpi_html, _ = stat_grid_card_html([
         {"icono": "money", "label": "Ingreso del mes", "valor": fmt(d["tot_mes"]), "sub": d["mes_txt"]},
         {"icono": "stack", "label": "Ingreso acumulado", "valor": "No disponible"},
         {"icono": "target", "label": "Presupuesto del mes",
@@ -1965,81 +2047,51 @@ def pagina_analisis_ingresos():
          "delta_pos": (d["cumplimiento"] >= 1.0) if d["cumplimiento"] is not None else None},
         {"icono": "trend", "label": "Presupuesto acumulado",
          "valor": fmt(d["ppto_acum_tot"]) if d["ppto_acum_tot"] else "No disponible"},
-    ], height=135)
+    ])
+    crec_html, _ = stat_grid_card_html([
+        {"icono": "trend", "label": "Crecimiento vs. mes anterior", "valor": "No disponible"},
+    ])
+    ev_html, ev_script = chart_bar_card_html(
+        "chart", "Evolución de ingresos", "Ingreso real vs. presupuesto mensual",
+        [d["mes_txt"]], [d["tot_mes"]], [d["ppto_mes_tot"] or 0], "Ingreso real", "Presupuesto",
+        JOCS_AZUL, "#9DBFE8", extra_note="1 de 12 meses cargados · se completa con más histórico",
+        height=300)
+    resop_html, _ = stat_grid_card_html([
+        {"icono": "people", "label": "Clientes activos", "valor": f"{d['n_contrapartes']:,}"},
+        {"icono": "gauge", "label": "Resultado operativo",
+         "valor": ("Superávit" if MARGEN is not None and MARGEN >= 0 else "Déficit") if MARGEN is not None else "—",
+         "delta_txt": f"Margen {MARGEN_PCT*100:.1f}%" if MARGEN_PCT is not None else None,
+         "delta_pos": (MARGEN_PCT >= 0) if MARGEN_PCT is not None else None},
+    ])
+    variacion = (d["tot_mes"] / d["ppto_mes_tot"] - 1) if d["ppto_mes_tot"] else 0.0
+    tend_html, tend_script = chart_line_card_html(
+        "trend", "Tendencia de crecimiento", "Variación mensual de los ingresos",
+        [d["mes_txt"]], [variacion], [0.0], "Ingreso real", "Presupuesto", JOCS_AZUL, "#9DBFE8",
+        formato_pct=True, extra_note="1 de 12 meses cargados · se completa con más histórico",
+        height=340)
 
-    st.write("")
-    col_izq, col_centro, col_der = st.columns([0.8, 1.6, 0.8])
-    with col_izq:
-        stat_grid_card_html([
-            {"icono": "trend", "label": "Crecimiento vs. mes anterior", "valor": "No disponible"},
-        ], height=300)
-    with col_centro:
-        chart_bar_card_html("chart", "Evolución de ingresos", "Ingreso real vs. presupuesto mensual",
-                            [d["mes_txt"]], [d["tot_mes"]], [d["ppto_mes_tot"] or 0],
-                            "Ingreso real", "Presupuesto", JOCS_AZUL, "#9DBFE8",
-                            extra_note="1 de 12 meses cargados · se completa con más histórico",
-                            height=300)
-    with col_der:
-        stat_grid_card_html([
-            {"icono": "people", "label": "Clientes activos", "valor": f"{d['n_contrapartes']:,}"},
-            {"icono": "gauge", "label": "Resultado operativo",
-             "valor": ("Superávit" if MARGEN is not None and MARGEN >= 0 else "Déficit") if MARGEN is not None else "—",
-             "delta_txt": f"Margen {MARGEN_PCT*100:.1f}%" if MARGEN_PCT is not None else None,
-             "delta_pos": (MARGEN_PCT >= 0) if MARGEN_PCT is not None else None},
-        ], height=300)
+    render_pagina_html([
+        [(1, header_html, 80)],
+        [(1, kpi_html, 135)],
+        [(0.8, crec_html, 300), (1.6, ev_html, 300), (0.8, resop_html, 300)],
+    ], extra_script=ev_script)
+    _nota_pendientes()
 
-    st.write("")
-    col_tend, col_aduana = st.columns([1.4, 1])
-    with col_tend:
-        variacion = (d["tot_mes"] / d["ppto_mes_tot"] - 1) if d["ppto_mes_tot"] else 0.0
-        chart_line_card_html("trend", "Tendencia de crecimiento", "Variación mensual de los ingresos",
-                             [d["mes_txt"]], [variacion], [0.0], "Ingreso real", "Presupuesto",
-                             JOCS_AZUL, "#9DBFE8", formato_pct=True,
-                             extra_note="1 de 12 meses cargados · se completa con más histórico",
-                             height=340)
-    with col_aduana:
-        aduanas_disp = sorted(base_df["aduana"].dropna().unique().tolist())
-        if not aduanas_disp:
-            empty_state_card_html("pin", "Resumen de la aduana", "", "Sin aduanas con actividad.", height=340)
-        else:
-            aduana_sel = st.selectbox("Aduana", aduanas_disp, key="resumen_aduana_ingresos")
-            base_aduana = base_df[base_df["aduana"] == aduana_sel]
-            tot_aduana = float(base_aduana["importe"].sum())
-            por_desc = (base_aduana.groupby("descripcion")["importe"].sum()
-                       .sort_values(ascending=False)) if not base_aduana.empty else pd.Series(dtype=float)
-            top_conceptos = por_desc.head(3)
-            otros_val = float(por_desc.iloc[3:].sum()) if len(por_desc) > 3 else 0.0
-            filas_concepto = "".join(
-                f'<div style="display:flex;justify-content:space-between;font-size:11.5px;'
-                f'margin-bottom:5px;"><span style="color:{DASH_TEXT};overflow:hidden;'
-                f'text-overflow:ellipsis;white-space:nowrap;max-width:160px;">{c}</span>'
-                f'<span style="color:{DASH_SUBTEXT};font-weight:600;">{f"{v/tot_aduana*100:.1f}%" if tot_aduana else "—"}</span></div>'
-                for c, v in top_conceptos.items())
-            if otros_val:
-                filas_concepto += (f'<div style="display:flex;justify-content:space-between;font-size:11.5px;">'
-                                   f'<span style="color:{DASH_TEXT};">Otros conceptos</span>'
-                                   f'<span style="color:{DASH_SUBTEXT};font-weight:600;">{f"{otros_val/tot_aduana*100:.1f}%" if tot_aduana else "—"}</span></div>')
-            body = f"""
-              <div class="card">
-                <div class="card-header">{_dash_icono('pin')}<p class="card-title">Resumen de la aduana</p></div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:10px 0 14px;">
-                  <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['doc']}</div>
-                    <div><div class="mini-val">{fmt(tot_aduana)}</div>
-                    <div class="mini-label">Ingreso total del mes</div></div></div>
-                  <div class="mini-stat"><div class="stat-icon">{DASH_ICONOS['list']}</div>
-                    <div><div class="mini-val">{len(base_aduana):,}</div>
-                    <div class="mini-label">Número de operaciones</div></div></div>
-                </div>
-                <p class="card-title" style="font-size:12.5px;margin:0 0 8px;">Ingresos por concepto (mes)</p>
-                {filas_concepto if filas_concepto else '<div style="color:' + DASH_SUBTEXT + ';font-size:12px;">Sin datos.</div>'}
-              </div>"""
-            html_card(body, 340)
-
-    st.write("")
-    _composicion_y_ranking(base_df, "Ingresos", "Ingreso", "Clientes", "Cliente", C_EMITIDA,
-                           d["tot_mes"], "descripcion",
-                           "Emitidas no trae una categoría de cierre como Recibidas; se agrupa por "
-                           "**Descripción** de la línea en su lugar.")
+    aduanas_disp = sorted(base_df["aduana"].dropna().unique().tolist())
+    if not aduanas_disp:
+        render_pagina_html([[(1, tend_html, 340)]], extra_script=tend_script)
+        st.info("Sin aduanas con actividad.")
+    else:
+        aduana_sel = st.selectbox("Aduana", aduanas_disp, key="resumen_aduana_ingresos")
+        aduana_html = _resumen_aduana_ingresos_frag(base_df, aduana_sel)
+        st.caption("Emitidas no trae una categoría de cierre como Recibidas; se agrupa por "
+                  "**Descripción** de la línea en su lugar.")
+        filas_cr, script_cr = _composicion_y_ranking_filas(
+            base_df, "Ingresos", "Ingreso", "Clientes", "Cliente", C_EMITIDA, d["tot_mes"], "descripcion")
+        render_pagina_html([
+            [(1.4, tend_html, 340), (1, aduana_html, 340)],
+            filas_cr,
+        ], extra_script=tend_script + script_cr)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PANORAMA
