@@ -336,12 +336,15 @@ def barra_real_ppto_html(real, ppto, color):
         f'width:2px;background:{C_MARGEN};"></div></div>'
     )
 
-def ranking_aduana_recharts(df, color, height=None):
-    """Barra horizontal Real (color) + marca vertical Ppto (ambar) por aduana,
-    ordenado como venga 'df'. 'df' columnas: aduana, real, ppto (puede ser None
-    si esa aduana no tiene presupuesto), delta_txt (texto ya formateado)."""
+def ranking_aduana_card_frag(titulo, subtitulo, consolidado_html, df, color, height=None):
+    """Tarjeta 'Rentabilidad por Aduana': barra horizontal Real (color) + marca
+    vertical Ppto (ambar), soporta aduanas con perdida (utilidad negativa) --
+    mismo mecanismo de BarraReal que ranking_concentracion_card_html pero con
+    dominio [piso, techo] en vez de [0, techo] (ver nota abajo). Devuelve
+    (html, script) para fundirse en un documento con render_pagina_html()."""
     h_px = height or max(280, 32 * len(df) + 60)
     ancho_eje = _ancho_eje_categoria(df["aduana"])
+    div_id = _next_id("rank-aduana")
     # Piso puede ser negativo (aduanas con perdida operativa) -- sin esto el
     # dominio se queda en [0, techo] y Recharts intenta dibujar barras con
     # ancho negativo para esas filas (error de SVG, la barra no se ve).
@@ -352,9 +355,10 @@ def ranking_aduana_recharts(df, color, height=None):
             "real_txt": fmt(r.real), "ppto_txt": fmt(r.ppto) if pd.notna(r.ppto) else "—",
             "delta_txt": r.delta_txt}
             for r in df.itertuples()]
-    render_js = f"""
+    script = f"""(function() {{
 const h = React.createElement;
 const {{ ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, LabelList, ReferenceLine }} = Recharts;
+const data = {json.dumps(data)};
 
 function BarraReal(props) {{
   const {{ x, y, width, height, payload }} = props;
@@ -386,9 +390,9 @@ function TooltipRanking(props) {{
   );
 }}
 
-const root = ReactDOM.createRoot(document.getElementById('root'));
+const root = ReactDOM.createRoot(document.getElementById('{div_id}'));
 root.render(
-  h(ResponsiveContainer, {{ width: '100%', height: {h_px - 10} }},
+  h(ResponsiveContainer, {{ width: '100%', height: '100%' }},
     h(BarChart, {{ data: data, layout: 'vertical', margin: {{ top: 10, right: 70, left: 10, bottom: 10 }} }},
       h(CartesianGrid, {{ strokeDasharray: '3 3', horizontal: false }}),
       h(XAxis, {{ type: 'number', domain: [{piso}, {techo}], allowDataOverflow: true, tickFormatter: fmtMoney,
@@ -403,8 +407,16 @@ root.render(
     )
   )
 );
+}})();
 """
-    recharts_component(render_js, data, height=h_px)
+    body = f"""
+      <div class="card">
+        <div class="card-header">{_dash_icono('chart')}<p class="card-title">{titulo}</p></div>
+        <p class="card-subtitle">{subtitulo}</p>
+        {consolidado_html}
+        <div id="{div_id}" style="height:{h_px - 90}px;"></div>
+      </div>"""
+    return body, script
 
 def bar_h_recharts(serie, color, height=None, formateador=fmt_m):
     """Version Recharts de barra_h(): barra horizontal simple + etiqueta a la derecha."""
@@ -1577,7 +1589,9 @@ def render_pagina_html(filas, extra_script=""):
 
 def stat_grid_card_html(cards):
     """'cards': lista de dicts {icono, label, valor, sub (opcional), delta_txt
-    (opcional), delta_pos (True/False/None -> verde/rojo/gris)}."""
+    (opcional), delta_pos (True/False/None -> verde/rojo/gris), barra_html
+    (opcional, ej. salida de barra_real_ppto_html -- barrita Real vs Ppto
+    embebida dentro de la tarjeta, mismo lenguaje visual del mockup)."""
     items = "".join(f"""
       <div class="stat-card">
         <div class="stat-top"><div class="stat-icon">{DASH_ICONOS.get(c.get('icono'), '•')}</div>
@@ -1585,6 +1599,7 @@ def stat_grid_card_html(cards):
         <div class="stat-value">{c['valor']}</div>
         {_dash_badge(c.get('delta_txt'), c.get('delta_pos'))}
         {f'<div class="stat-sub">{c["sub"]}</div>' if c.get('sub') else ''}
+        {c.get('barra_html') or ''}
       </div>""" for c in cards)
     return f'<div class="stat-grid" style="height:100%;">{items}</div>', ""
 
@@ -2141,7 +2156,7 @@ if pagina == "Utilidad Operativa":
                       f"(`{PRESUPUESTO_PATH.name}`); se muestra solo lo Real.")
 
         # ══════════════════════════════════════════════════════════════════════
-        # RESUMEN EJECUTIVO
+        # RESUMEN EJECUTIVO -- selects nativos (cambian el dato), tarjetas fundidas
         # ══════════════════════════════════════════════════════════════════════
         st.divider()
         st.subheader("Resumen Ejecutivo")
@@ -2161,37 +2176,32 @@ if pagina == "Utilidad Operativa":
                                               - uo_resumen_ad["ctos_referencia"])
         aduanas_ppto_sel = aduanas_resumen or aduanas_uo
 
-        conceptos_kpi = [("Ingresos", "ingreso", "ingresos", C_EMITIDA),
-                         ("Costos de Referencia", "ctos_referencia", "costos", C_NEG),
-                         ("Gastos Operativos", "gastos_operativos", "gastos", JOCS_VERDE),
-                         ("Utilidad Operativa", "utilidad", "utilidad", C_MARGEN)]
-        cols_kpi = st.columns(4)
-        for col, (nombre, real_key, ppto_key, color) in zip(cols_kpi, conceptos_kpi):
-            with col, st.container(border=True):
-                st.markdown(f"**{nombre}**")
-                real_val = float(uo_resumen_ad[real_key].sum()) if not uo_resumen_ad.empty else 0.0
-                st.metric("Real", fmt(real_val))
-                if tiene_ppto:
-                    ppto_val = float(ppto_df.loc[ppto_df.index.isin(aduanas_ppto_sel), ppto_key].sum())
-                    delta = real_val / ppto_val - 1 if ppto_val else None
-                    st.caption(f"Ppto: {fmt(ppto_val)}" + (f" · {pct(delta)} vs ppto" if delta is not None else ""))
-                    st.markdown(barra_real_ppto_html(real_val, ppto_val, color), unsafe_allow_html=True)
-                else:
-                    st.caption("Ppto no disponible")
+        conceptos_kpi = [("Ingresos", "money", "ingreso", "ingresos", C_EMITIDA),
+                         ("Costos de Referencia", "target", "ctos_referencia", "costos", C_NEG),
+                         ("Gastos Operativos", "stack", "gastos_operativos", "gastos", JOCS_VERDE),
+                         ("Utilidad Operativa", "trend", "utilidad", "utilidad", C_MARGEN)]
+        kpi_cards = []
+        for nombre, icono, real_key, ppto_key, color in conceptos_kpi:
+            real_val = float(uo_resumen_ad[real_key].sum()) if not uo_resumen_ad.empty else 0.0
+            card = {"icono": icono, "label": nombre, "valor": fmt(real_val)}
+            if tiene_ppto:
+                ppto_val = float(ppto_df.loc[ppto_df.index.isin(aduanas_ppto_sel), ppto_key].sum())
+                delta = real_val / ppto_val - 1 if ppto_val else None
+                card["sub"] = f"Ppto: {fmt(ppto_val)}" + (f" · {pct(delta)} vs ppto" if delta is not None else "")
+                card["barra_html"] = barra_real_ppto_html(real_val, ppto_val, color)
+            else:
+                card["sub"] = "Ppto no disponible"
+            kpi_cards.append(card)
+        kpi_html, _ = stat_grid_card_html(kpi_cards)
+        render_pagina_html([[(1, kpi_html, 160)]])
         st.caption("Acumulado y avance contra presupuesto anual pendientes de cargar el histórico "
                   "real mes a mes (hoy solo hay un mes de datos reales en vivo).")
 
         # ══════════════════════════════════════════════════════════════════════
-        # RENTABILIDAD POR ADUANA
+        # RENTABILIDAD POR ADUANA -- toggle nativo (cambia el dato), tarjeta fundida
         # ══════════════════════════════════════════════════════════════════════
         st.divider()
-        st.subheader("Rentabilidad por Aduana")
-        st.caption("Utilidad Operativa real (barra) vs. presupuesto del mes (marca ámbar).")
-        margen_cons = uo_ad["utilidad"].sum() / uo_ad["ingreso"].sum() if uo_ad["ingreso"].sum() else None
-        st.markdown(f"**Utilidad consolidada: {fmt(uo_ad['utilidad'].sum())}**" +
-                   (f" · Margen {pct(margen_cons)}" if margen_cons is not None else ""))
-        modo_rank = st.radio("Ver", ["Top 5", "Todas"], horizontal=True, key="uo_rank_modo",
-                             label_visibility="collapsed")
+        modo_rank = st.radio("Ver", ["Top 5", "Todas"], horizontal=True, key="uo_rank_modo")
         orden_rank = uo_ad.sort_values("utilidad", ascending=False)
         n_total_aduanas = len(orden_rank)
         if modo_rank == "Top 5":
@@ -2204,7 +2214,15 @@ if pagina == "Utilidad Operativa":
         else:
             df_rank_chart["ppto"] = None
             df_rank_chart["delta_txt"] = ""
-        ranking_aduana_recharts(df_rank_chart, JOCS_AZUL, height=max(280, 44 * len(df_rank_chart) + 60))
+        margen_cons = uo_ad["utilidad"].sum() / uo_ad["ingreso"].sum() if uo_ad["ingreso"].sum() else None
+        consolidado_html = (f'<p style="margin:0 0 10px;font-size:13px;color:{DASH_TEXT};">'
+                            f'<b>Utilidad consolidada: {fmt(uo_ad["utilidad"].sum())}</b>' +
+                            (f' · Margen {pct(margen_cons)}' if margen_cons is not None else '') + '</p>')
+        rank_h = max(280, 44 * len(df_rank_chart) + 60)
+        rank_html, rank_script = ranking_aduana_card_frag(
+            "Rentabilidad por Aduana", "Utilidad Operativa real (barra) vs. presupuesto del mes (marca ámbar).",
+            consolidado_html, df_rank_chart, JOCS_AZUL, height=rank_h)
+        render_pagina_html([[(1, rank_html, rank_h)]], extra_script=rank_script)
         if modo_rank == "Top 5" and n_total_aduanas > 5:
             st.caption(f"Se muestran 5 de {n_total_aduanas} aduanas. Cambia a \"Todas\" para verlas completas.")
 
@@ -2213,11 +2231,7 @@ if pagina == "Utilidad Operativa":
         # ══════════════════════════════════════════════════════════════════════
         if tiene_ppto:
             st.divider()
-            st.subheader("Estado de Resultados")
             mes_ppto_txt = MES_COL_MAYUS.get(mes_ppto, "").title() if mes_ppto else "—"
-            st.caption(f"Mes: {mes_ppto_txt}. Vista acumulada y comparativo contra 2025 pendientes "
-                      "de histórico (ver Resumen Ejecutivo). \"Ppto. anual\" es una proyección simple "
-                      "(acumulado a la fecha ÷ meses transcurridos × 12), no una meta anual real.")
 
             ingresos_real, costos_real = float(uo_ad["ingreso"].sum()), float(uo_ad["ctos_referencia"].sum())
             sueldos_real, gastos_real = float(uo_ad["SUELDOS"].sum()), float(uo_ad["gastos_operativos"].sum())
@@ -2233,19 +2247,33 @@ if pagina == "Utilidad Operativa":
             cg_ppto_anual = pa_costos + pa_sueldos + pa_gastos
 
             def _fila_er(nombre, real, ppto, ppto_anual, indent=False):
-                return {"Concepto": ("　" if indent else "") + nombre, "Real": fmt(real),
-                       "Presupuesto": fmt(ppto), "Var. %": pct(real / ppto - 1) if ppto else "—",
-                       "Ppto. anual (proyectado)": fmt(ppto_anual)}
+                nom = ("&nbsp;&nbsp;&nbsp;&nbsp;" if indent else "") + nombre
+                return (f'<tr><td>{nom}</td><td class="num">{fmt(real)}</td>'
+                       f'<td class="num">{fmt(ppto)}</td>'
+                       f'<td class="num">{pct(real / ppto - 1) if ppto else "—"}</td>'
+                       f'<td class="num">{fmt(ppto_anual)}</td></tr>')
 
-            filas_er = [
+            filas_er = "".join([
                 _fila_er("Ingresos", ingresos_real, ingresos_ppto, pa_ingresos),
                 _fila_er("Costos y gastos", cg_real, cg_ppto, cg_ppto_anual),
                 _fila_er("Costos de Referencia", costos_real, costos_ppto, pa_costos, indent=True),
                 _fila_er("Sueldos", sueldos_real, sueldos_ppto, pa_sueldos, indent=True),
                 _fila_er("Gastos Operativos", gastos_real, gastos_ppto, pa_gastos, indent=True),
                 _fila_er("Utilidad Operativa", utilidad_real, utilidad_ppto, pa_utilidad),
-            ]
-            st.dataframe(pd.DataFrame(filas_er), use_container_width=True, hide_index=True)
+            ])
+            er_body = f"""
+              <div class="card">
+                <div class="card-header">{_dash_icono('doc')}<p class="card-title">Estado de Resultados</p></div>
+                <p class="card-subtitle">Mes: {mes_ppto_txt}. Vista acumulada y comparativo contra 2025
+                  pendientes de histórico (ver Resumen Ejecutivo). "Ppto. anual" es una proyección simple
+                  (acumulado a la fecha ÷ meses transcurridos × 12), no una meta anual real.</p>
+                <table class="dtable">
+                  <tr><th>Concepto</th><th class="num">Real</th><th class="num">Presupuesto</th>
+                      <th class="num">Var. %</th><th class="num">Ppto. anual (proyectado)</th></tr>
+                  {filas_er}
+                </table>
+              </div>"""
+            render_pagina_html([[(1, er_body, 330)]])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GASTOS POR CONCEPTO
