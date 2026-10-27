@@ -81,6 +81,15 @@ select.aduana-select {
   color: var(--sub); cursor: pointer; border-radius: 6px; font-family: inherit;
 }
 .seg-control button.active { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(16,24,40,0.1); }
+.breadcrumb { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; color: var(--sub); margin-bottom: 10px; min-height: 24px; }
+.breadcrumb-back {
+  display: flex; align-items: center; gap: 4px; font-size: 12px; font-family: inherit;
+  color: var(--azul); background: #EEF1F5; border: 1px solid var(--border); border-radius: 5px;
+  padding: 3px 9px; cursor: pointer; margin-right: 8px;
+}
+.breadcrumb-sep { color: #b7c0c9; }
+.breadcrumb-item { cursor: pointer; text-decoration: underline; }
+.breadcrumb-item.actual { cursor: default; font-weight: 700; color: var(--azul); text-decoration: none; }
 </style>
 </head>
 <body>
@@ -105,7 +114,7 @@ const Streamlit = {
 const h = React.createElement;
 const { useState, useMemo } = React;
 const { ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
-        XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, LabelList } = Recharts;
+        XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, LabelList, Treemap } = Recharts;
 
 const ICONOS = {
   money: "💵", target: "🎯", people: "👥", chart: "📊", building: "🏢", trophy: "🏆",
@@ -567,35 +576,281 @@ function StatCardInline(props) {
     c.sub ? h("div", { className: "stat-sub" }, c.sub) : null);
 }
 
+/* ── Nómina: treemap de 3 niveles (aduana -> empleado -> percepción) con */
+/*    drill-down -- mismo algoritmo que components/treemap_click/, ahora  */
+/*    como estado de React normal (useState) en vez del puente postMessage */
+/*    porque ya vive en el mismo documento que el resto del tablero. ───── */
+const _medidorTreemap = document.createElement("canvas").getContext("2d");
+function medirAnchoTreemap(txt, fontSize, weight) {
+  _medidorTreemap.font = `${weight} ${fontSize}px system-ui, 'Segoe UI', Roboto, sans-serif`;
+  return _medidorTreemap.measureText(txt).width;
+}
+function partirNombreTreemap(nombre) {
+  const palabras = nombre.trim().split(/\s+/);
+  if (palabras.length === 1) return [nombre, ""];
+  let mejorCorte = 1, mejorDif = Infinity;
+  for (let i = 1; i < palabras.length; i++) {
+    const l1 = palabras.slice(0, i).join(" ").length;
+    const l2 = palabras.slice(i).join(" ").length;
+    const dif = Math.abs(l1 - l2);
+    if (dif < mejorDif) { mejorDif = dif; mejorCorte = i; }
+  }
+  return [palabras.slice(0, mejorCorte).join(" "), palabras.slice(mejorCorte).join(" ")];
+}
+function textoAjustadoTreemap(txt, x, y, fontSize, weight, anchoMax, extra) {
+  const medido = medirAnchoTreemap(txt, fontSize, weight);
+  const props = Object.assign({ x, y, textAnchor: "middle", fill: "#FFFFFF",
+                               fontSize, fontWeight: weight, pointerEvents: "none" }, extra || {});
+  if (medido > anchoMax) { props.textLength = anchoMax; props.lengthAdjust = "spacingAndGlyphs"; }
+  return h("text", props, txt);
+}
+function NodoTreemap(props) {
+  const { x, y, width, height: hgt, color, name, etiqueta, clicable, onClick } = props;
+  const anchoDisp = Math.max(width - 10, 0);
+  const cabeAlgo = width >= 22 && hgt >= 14;
+  if (!cabeAlgo) {
+    return h("g", { onClick: clicable ? () => onClick(name) : undefined,
+                    style: { cursor: clicable ? "pointer" : "default" } },
+      h("rect", { x, y, width, height: hgt, fill: color, stroke: "#FFFFFF", strokeWidth: 2, rx: 4 }));
+  }
+  const fs = Math.max(7, Math.min(11, hgt / 4, width / 7));
+  const cabeEn1 = medirAnchoTreemap(name, fs, 600) <= anchoDisp;
+  const [linea1, linea2] = cabeEn1 ? [name, ""] : partirNombreTreemap(name);
+  const dosLineas = !cabeEn1 && linea2 !== "";
+  const centroY = y + hgt / 2;
+  const altoNombre = (dosLineas ? 2 : 1) * (fs + 2);
+  const cabeEtiqueta = (hgt - altoNombre) > 16 && width > 50;
+  const yNombre = dosLineas ? centroY - fs * 0.7 - (cabeEtiqueta ? 6 : 0) : centroY - (cabeEtiqueta ? fs * 0.7 : 0);
+  const yLinea2 = yNombre + fs + 2;
+  const yEtiqueta = (dosLineas ? yLinea2 : yNombre) + fs + 3;
+  return h("g", { onClick: clicable ? () => onClick(name) : undefined,
+                  style: { cursor: clicable ? "pointer" : "default" } },
+    h("rect", { x, y, width, height: hgt, fill: color, stroke: "#FFFFFF", strokeWidth: 2, rx: 4 }),
+    textoAjustadoTreemap(linea1, x + width / 2, yNombre, fs, 600, anchoDisp),
+    dosLineas ? textoAjustadoTreemap(linea2, x + width / 2, yLinea2, fs, 600, anchoDisp) : null,
+    cabeEtiqueta ? textoAjustadoTreemap(etiqueta, x + width / 2, yEtiqueta, 10, 400, anchoDisp, { opacity: 0.9 }) : null
+  );
+}
+function nodoEnArbol(arbolRaiz, path) {
+  if (path.length === 0) return { boxes: arbolRaiz, nivel: 0 };
+  const aduana = arbolRaiz.find((a) => a.name === path[0]);
+  if (!aduana) return { boxes: arbolRaiz, nivel: 0 };
+  if (path.length === 1) return { boxes: aduana.empleados, nivel: 1 };
+  const empleado = aduana.empleados.find((e) => e.name === path[1]);
+  if (!empleado) return { boxes: aduana.empleados, nivel: 1 };
+  return { boxes: empleado.componentes, nivel: 2 };
+}
+function TreemapNomina(props) {
+  const { arbol, path, setPath } = props;
+  const nodo = nodoEnArbol(arbol, path);
+  const esHoja = nodo.nivel === 2;
+  const migas = [{ etiqueta: "Aduanas", p: [] }].concat(
+    path.map((nombre, i) => ({ etiqueta: nombre, p: path.slice(0, i + 1) })));
+  return h("div", {},
+    h("div", { className: "breadcrumb" },
+      path.length > 0 ? h("button", { className: "breadcrumb-back", onClick: () => setPath(path.slice(0, -1)) }, "← Regresar") : null,
+      migas.map((m, i) => h(React.Fragment, { key: i },
+        i > 0 ? h("span", { className: "breadcrumb-sep" }, "›") : null,
+        h("span", {
+          className: "breadcrumb-item" + (i === migas.length - 1 ? " actual" : ""),
+          onClick: i === migas.length - 1 ? undefined : () => setPath(m.p),
+        }, m.etiqueta)))),
+    h("div", { style: { height: 420 } },
+      h(ResponsiveContainer, { width: "100%", height: "100%" },
+        h(Treemap, {
+          data: nodo.boxes, dataKey: "size", isAnimationActive: true, animationDuration: 350,
+          content: h(NodoTreemap, { clicable: !esHoja, onClick: (name) => setPath(path.concat([name])) }),
+        }))));
+}
+function NominaPage(props) {
+  const { datos } = props;
+  const [path, setPath] = useState([]);
+  if (!datos) return h(EmptyCard, { icono: "people", titulo: "Nómina", mensaje: "Sin datos de nómina para el periodo y aduana seleccionados." });
+
+  const aduanaSel = path.length >= 1 ? path[0] : null;
+  const empleadoSel = path.length >= 2 ? path[1] : null;
+  const nodoAduana = aduanaSel ? datos.arbol.find((a) => a.name === aduanaSel) : null;
+  const nodoEmpleado = (nodoAduana && empleadoSel) ? nodoAduana.empleados.find((e) => e.name === empleadoSel) : null;
+
+  return h(React.Fragment, {},
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)" } },
+      h(StatCardInline, { c: { icono: "money", label: "Total Nómina Neta", valor: fmt(datos.tot_nomina) } }),
+      h(StatCardInline, { c: { icono: "chart", label: "% del Gasto Operativo",
+        valor: datos.pct_gasto_op !== null ? pct(datos.pct_gasto_op) : "—",
+        sub: "Nómina Neta ÷ Total Recibida del periodo seleccionado." } })),
+    h("div", { className: "card", style: { marginBottom: 16 } },
+      h(CardHeader, { icono: "people", titulo: "Desglose por Aduana, Personal y Percepción" }),
+      h("p", { className: "card-subtitle" },
+        "Haz clic en un cuadro para profundizar: aduana → empleados de esa aduana → componentes de su percepción. La miga de pan de arriba regresa a un nivel anterior."),
+      h(TreemapNomina, { arbol: datos.arbol, path, setPath })),
+    nodoAduana ? h("div", { className: "card", style: { marginBottom: 16 } },
+      h(CardHeader, { icono: "list", titulo: `Empleados de ${aduanaSel}` }),
+      h("p", { className: "card-subtitle" },
+        `Total nómina ${aduanaSel}: ${fmt(nodoAduana.size)} · ${nodoAduana.empleados.length} empleado(s)`),
+      h("table", { className: "dtable" },
+        h("tbody", {},
+          h("tr", {}, h("th", {}, "Empleado"), h("th", { className: "num" }, "% Conformación Aduana"), h("th", { className: "num" }, "Sueldo Total")),
+          [...nodoAduana.empleados].sort((a, b) => b.size - a.size).map((e, i) => h("tr", { key: i },
+            h("td", {}, e.name),
+            h("td", { className: "num" }, (e.size / (nodoAduana.size || 1) * 100).toFixed(1) + "%"),
+            h("td", { className: "num" }, fmt(e.size))))))) : null,
+    nodoEmpleado ? h("div", { className: "card" },
+      h(CardHeader, { icono: "doc", titulo: "Ficha Técnica del Trabajador" }),
+      h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)", margin: "10px 0" } },
+        h(StatCardInline, { c: { icono: "pin", label: "Aduana", valor: aduanaSel } }),
+        h(StatCardInline, { c: { icono: "money", label: "Costo Total Neto", valor: fmt(nodoEmpleado.size) } })),
+      h("p", { style: { fontSize: 12, color: "var(--sub)" } },
+        nodoEmpleado.componentes.map((c) => `${c.name}: ${c.etiqueta}`).join(" + ") + ` = ${fmt(nodoEmpleado.size)} (Costo Total Neto)`)) : null);
+}
+
+/* ── Tarjeta de Crédito: dona anidada (Facturado/No Facturado + proveedor) */
+/*    y velocímetro semicircular -- mismo trazo SVG a mano que gauge_svg()  */
+/*    del lado de Python, ahora calculado en el navegador. ──────────────── */
+function GaugeSemicircular(props) {
+  const frac = Math.max(0, Math.min(1, props.frac));
+  const bandas = props.bandas;
+  const cx = 130, cy = 122, rOut = 92, rIn = 60;
+  function punto(r, angDeg) {
+    const rad = (Math.PI / 180) * angDeg;
+    return [cx + r * Math.cos(rad), cy - r * Math.sin(rad)];
+  }
+  function arco(aIni, aFin) {
+    const [x1o, y1o] = punto(rOut, aIni), [x2o, y2o] = punto(rOut, aFin);
+    const [x1i, y1i] = punto(rIn, aFin), [x2i, y2i] = punto(rIn, aIni);
+    return `M ${x1o.toFixed(2)} ${y1o.toFixed(2)} A ${rOut} ${rOut} 0 0 1 ${x2o.toFixed(2)} ${y2o.toFixed(2)} L ${x1i.toFixed(2)} ${y1i.toFixed(2)} A ${rIn} ${rIn} 0 0 0 ${x2i.toFixed(2)} ${y2i.toFixed(2)} Z`;
+  }
+  const piezas = [];
+  let a = 180.0;
+  bandas.forEach(([proporcion, color], i) => {
+    const a2 = a - proporcion * 180.0;
+    piezas.push(h("path", { key: "b" + i, d: arco(a, a2), fill: color }));
+    a = a2;
+  });
+  const marcas = [];
+  for (let p = 0; p <= 100; p += 10) {
+    const ang = 180.0 - (p / 100.0) * 180.0;
+    const [x1, y1] = punto(rOut + 2, ang), [x2, y2] = punto(rOut + 8, ang), [xt, yt] = punto(rOut + 19, ang);
+    marcas.push(h("line", { key: "l" + p, x1, y1, x2, y2, stroke: "#8a95a1", strokeWidth: 1.5 }));
+    marcas.push(h("text", { key: "t" + p, x: xt, y: yt, textAnchor: "middle", fontSize: 9, fill: "#8a95a1" }, p + "%"));
+  }
+  const angAguja = 180.0 - frac * 180.0;
+  const [xa, ya] = punto(rIn - 6, angAguja);
+  return h("div", { style: { display: "flex", justifyContent: "center" } },
+    h("svg", { viewBox: "0 0 260 195", width: 280, height: 210 },
+      piezas, marcas,
+      h("line", { x1: cx, y1: cy, x2: xa, y2: ya, stroke: props.colorAguja, strokeWidth: 4, strokeLinecap: "round" }),
+      h("circle", { cx, cy, r: 7, fill: props.colorAguja }),
+      h("text", { x: cx, y: cy + 34, textAnchor: "middle", fontSize: 26, fontWeight: 700, fill: props.colorAguja }, Math.round(frac * 100) + "%"),
+      h("text", { x: cx, y: cy + 52, textAnchor: "middle", fontSize: 12, fill: "#54616f" }, props.etiqueta || "del gasto facturado")));
+}
+function DonaAnidadaTarjeta(props) {
+  const { montoFacturado, montoNoFacturado, porProveedor, colorFact, colorNoFact } = props;
+  const dataInt = [{ nombre: "Facturado", valor: montoFacturado, color: colorFact },
+                   { nombre: "No Facturado", valor: montoNoFacturado, color: colorNoFact }];
+  const PISO = 0.03;
+  const totExt = porProveedor.reduce((s, d) => s + d.monto, 0) || 1;
+  const esChica = porProveedor.map((d) => d.monto / totExt < PISO);
+  const nChicas = esChica.filter(Boolean).length;
+  let dataExt;
+  if (nChicas > 0 && nChicas < porProveedor.length && nChicas * PISO < 1) {
+    const presupuestoChicas = nChicas * PISO;
+    const sumaGrandes = porProveedor.reduce((s, d, i) => s + (esChica[i] ? 0 : d.monto), 0);
+    const escala = sumaGrandes ? (1 - presupuestoChicas) * totExt / sumaGrandes : 1;
+    dataExt = porProveedor.map((d, i) => ({ nombre: d.nombre, valor: d.monto, color: colorFor(i),
+      valorAngulo: esChica[i] ? PISO * totExt : d.monto * escala }));
+  } else {
+    dataExt = porProveedor.map((d, i) => ({ nombre: d.nombre, valor: d.monto, color: colorFor(i), valorAngulo: d.monto }));
+  }
+  function TooltipDona({ active, payload }) {
+    if (!active || !payload || !payload.length) return null;
+    const d = payload[0].payload;
+    return h("div", { style: { background: "#fff", border: "1px solid #E3E6EA", borderRadius: 6, padding: "8px 12px", fontSize: 13 } },
+      h("div", { style: { fontWeight: 700, color: "var(--azul)" } }, d.nombre), h("div", {}, fmt(d.valor)));
+  }
+  return h("div", {},
+    h("div", { style: { display: "flex", gap: 14, justifyContent: "center", marginBottom: 6 } },
+      h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--sub)" } },
+        h("span", { style: { width: 10, height: 10, borderRadius: 2, background: colorFact, display: "inline-block" } }), "Facturado"),
+      h("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--sub)" } },
+        h("span", { style: { width: 10, height: 10, borderRadius: 2, background: colorNoFact, display: "inline-block" } }), "No Facturado")),
+    h("div", { style: { height: 320 } },
+      h(ResponsiveContainer, { width: "100%", height: "100%" },
+        h(PieChart, {},
+          h(Tooltip, { content: h(TooltipDona) }),
+          h(Pie, { data: dataInt, dataKey: "valor", nameKey: "nombre", cx: "50%", cy: "50%", innerRadius: 0, outerRadius: 70 },
+            dataInt.map((d, i) => h(Cell, { key: i, fill: d.color }))),
+          h(Pie, { data: dataExt, dataKey: "valorAngulo", nameKey: "nombre", cx: "50%", cy: "50%", innerRadius: 85, outerRadius: 130 },
+            dataExt.map((d, i) => h(Cell, { key: i, fill: d.color })))))));
+}
+function TarjetaCreditoPage(props) {
+  const { datos, colores } = props;
+  if (!datos || !datos.length) return h(EmptyCard, { icono: "money", titulo: "Tarjeta de Crédito", mensaje: "Sin movimientos para el periodo seleccionado." });
+  const bandas = [[0.50, colores.neg], [0.30, "#e8a93c"], [0.20, colores.verde]];
+  return h(React.Fragment, {},
+    datos.map((persona, i) => h("div", { key: i, className: "card", style: { marginBottom: 16 } },
+      h(CardHeader, { icono: "money", titulo: persona.nombre }),
+      !persona.tiene_datos
+        ? h("div", { className: "empty-state" }, `Sin movimientos de ${persona.nombre} para el periodo seleccionado.`)
+        : h("div", { style: { display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16, marginTop: 10 } },
+            h(DonaAnidadaTarjeta, { montoFacturado: persona.monto_facturado, montoNoFacturado: persona.monto_no_facturado,
+              porProveedor: persona.por_proveedor, colorFact: colores.azul, colorNoFact: colores.neg }),
+            h("div", {},
+              h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)", margin: "0 0 14px" } },
+                h(StatCardInline, { c: { icono: "money", label: "Total gastado", valor: fmt(persona.total_gastado) } }),
+                h(StatCardInline, { c: { icono: "list", label: "Movimientos", valor: persona.movimientos.toLocaleString("en-US") } }),
+                h(StatCardInline, { c: { icono: "doc", label: "UUID's encontrados", valor: persona.facturados.toLocaleString("en-US") } }),
+                h(StatCardInline, { c: { icono: "doc", label: "UUID's no encontrados", valor: persona.no_facturados.toLocaleString("en-US") } }),
+                h(StatCardInline, { c: { icono: "money", label: "Monto facturado", valor: fmt(persona.monto_facturado) } }),
+                h(StatCardInline, { c: { icono: "money", label: "Monto no facturado", valor: fmt(persona.monto_no_facturado) } })),
+              h(GaugeSemicircular, { frac: persona.pct_facturado, colorAguja: colores.azul, bandas,
+                etiqueta: "del gasto facturado" }))))));
+}
+
 const TABS = [
   { key: "Utilidad Operativa", icono: "chart", titulo: "Utilidad Operativa", subtitulo: "Tablero Carga-Aérea" },
   { key: "Gastos", icono: "chart", titulo: "Análisis de gastos por aduana", subtitulo: "Comportamiento, composición y principales proveedores de gastos" },
   { key: "Ingresos", icono: "chart", titulo: "Análisis de Ingresos", subtitulo: "Comportamiento, composición y principales generadores de ingresos" },
+  { key: "Nómina", icono: "people", titulo: "Nómina (Capital Humano)", subtitulo: "Nómina real por empleado, por aduana y por componente de percepción" },
+  { key: "Tarjeta de Crédito", icono: "money", titulo: "Tarjeta de Crédito", subtitulo: "Movimientos AMEX Alejandro y Josefa, facturados vs. no facturados" },
 ];
-const NAV_EXTERNO = ["Nómina", "Tarjeta de Crédito"];
 
 function App(props) {
   const d = props.datos;
   const [tab, setTab] = useState(d.pagina_activa && TABS.some((t) => t.key === d.pagina_activa) ? d.pagina_activa : "Utilidad Operativa");
   const activa = TABS.find((t) => t.key === tab) || TABS[0];
-  const datosActivos = tab === "Utilidad Operativa" ? d.utilidad_operativa : tab === "Gastos" ? d.gastos : d.ingresos;
-  const mesTxt = (datosActivos && datosActivos.mes_txt) || "—";
+  const datosPorTab = {
+    "Utilidad Operativa": d.utilidad_operativa, "Gastos": d.gastos, "Ingresos": d.ingresos,
+    "Nómina": d.nomina, "Tarjeta de Crédito": d.tarjeta_credito,
+  };
+  const datosActivos = datosPorTab[tab];
+  const mesTxt = (datosActivos && datosActivos.mes_txt) || (d.utilidad_operativa && d.utilidad_operativa.mes_txt) || "—";
 
-  return h("div", {},
-    h("div", { className: "topnav" },
-      TABS.map((t) => h("button", { key: t.key, className: tab === t.key ? "active" : "", onClick: () => setTab(t.key) }, t.titulo.split(" ")[0] === "Análisis" ? t.key : t.key)),
-      h("div", { className: "sep" }),
-      NAV_EXTERNO.map((n) => h("button", { key: n, onClick: () => Streamlit.setComponentValue({ nav_to: n }) }, n + " →"))),
-    h(React.Fragment, {},
-      h("div", { className: "dash-header" },
-        h("div", { className: "dash-header-left" },
-          h("div", { className: "dash-header-icon" }, ICONOS.chart),
-          h("div", {}, h("h1", {}, activa.titulo), h("p", {}, activa.subtitulo))),
-        h("div", { style: { display: "flex", gap: 10 } },
-          h("div", { className: "filtro-pill" }, h("span", {}, ICONOS.calendar), h("span", {}, h("span", { className: "fp-label" }, "Periodo"), h("span", { className: "fp-value" }, mesTxt))),
-          h("div", { className: "filtro-pill" }, h("span", {}, ICONOS.year), h("span", {}, h("span", { className: "fp-label" }, "Año"), h("span", { className: "fp-value" }, "2026"))))),
-    tab === "Utilidad Operativa" ? h(UtilidadOperativaPage, { datos: d.utilidad_operativa, colores: d.colores })
-      : h(FlujoPage, { datos: datosActivos, esIngreso: tab === "Ingresos", colores: d.colores })));
+  let paginaEl;
+  if (tab === "Utilidad Operativa") paginaEl = h(UtilidadOperativaPage, { datos: d.utilidad_operativa, colores: d.colores });
+  else if (tab === "Gastos" || tab === "Ingresos") paginaEl = h(FlujoPage, { datos: datosActivos, esIngreso: tab === "Ingresos", colores: d.colores });
+  else if (tab === "Nómina") paginaEl = h(NominaPage, { datos: d.nomina });
+  else paginaEl = h(TarjetaCreditoPage, { datos: d.tarjeta_credito, colores: d.colores });
+
+  const topnav = h("div", { className: "topnav" },
+    TABS.map((t) => h("button", {
+      key: t.key, className: tab === t.key ? "active" : "", onClick: () => setTab(t.key),
+    }, t.key)));
+
+  const iconoHeader = h("div", { className: "dash-header-icon" }, ICONOS[activa.icono] || ICONOS.chart);
+  const tituloHeader = h("div", {}, h("h1", {}, activa.titulo), h("p", {}, activa.subtitulo));
+  const headerLeft = h("div", { className: "dash-header-left" }, iconoHeader, tituloHeader);
+
+  const pillPeriodo = h("div", { className: "filtro-pill" },
+    h("span", {}, ICONOS.calendar),
+    h("span", {}, h("span", { className: "fp-label" }, "Periodo"), h("span", { className: "fp-value" }, mesTxt)));
+  const pillAnio = h("div", { className: "filtro-pill" },
+    h("span", {}, ICONOS.year),
+    h("span", {}, h("span", { className: "fp-label" }, "Año"), h("span", { className: "fp-value" }, "2026")));
+  const headerRight = h("div", { style: { display: "flex", gap: 10 } }, pillPeriodo, pillAnio);
+
+  const header = h("div", { className: "dash-header" }, headerLeft, headerRight);
+
+  return h("div", {}, topnav, header, paginaEl);
 }
 
 let root = null;

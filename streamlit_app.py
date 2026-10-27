@@ -1340,7 +1340,7 @@ components.html(
 )
 
 NAV_OPCIONES = ["Utilidad Operativa", "Gastos", "Ingresos", "Nómina", "Tarjeta de Crédito"]
-PAGINAS_REDISENADAS = {"Utilidad Operativa", "Gastos", "Ingresos"}
+PAGINAS_REDISENADAS = {"Utilidad Operativa", "Gastos", "Ingresos", "Nómina", "Tarjeta de Crédito"}
 if "nav" not in st.session_state:
     st.session_state["nav"] = "Utilidad Operativa"
 pagina = st.session_state["nav"]
@@ -1349,14 +1349,17 @@ labels_disp = [p.periodo_label for p in periodos]
 aduanas_todas = sorted(df["aduana"].dropna().unique().tolist())
 
 if pagina in PAGINAS_REDISENADAS:
-    # Estas 3 paginas ya no usan el sidebar ni widgets nativos de Streamlit --
-    # el usuario pidio explicitamente eliminar "todo lo de Streamlit" y
-    # reconstruir identico a sus mockups con React/HTML/CSS (ver
-    # [[feedback-respetar-referencias-visuales]]). La navegacion y los
-    # filtros viven DENTRO del componente (ver dashboard_component mas abajo);
-    # Periodo/Aduana no tienen un control global aqui porque hoy solo hay un
-    # periodo cargado y cada pagina ya filtra por aduana a su manera (ver
-    # mockup "Resumen de la aduana").
+    # Las 5 paginas (ya no solo las 3 con mockup) viven en el mismo componente
+    # React -- el usuario pidio explicitamente eliminar "todo lo de
+    # Streamlit" (ver [[feedback-respetar-referencias-visuales]]) y, despues,
+    # que Nomina/Tarjeta de Credito se rediseniaran "igual que las demas". La
+    # navegacion y los filtros viven DENTRO del componente (ver
+    # dashboard_component mas abajo); Periodo/Aduana no tienen un control
+    # global aqui porque hoy solo hay un periodo cargado y cada pagina ya
+    # filtra por aduana a su manera (ver mockup "Resumen de la aduana"). El
+    # bloque 'else' de abajo (sidebar nativo) queda sin usarse mientras las 5
+    # paginas sigan rediseniadas -- se deja por si alguna vuelve a Streamlit
+    # nativo mas adelante.
     st.markdown("""<style>
         [data-testid='stSidebar'] { display: none !important; }
         [data-testid='stToolbar'] { display: none !important; }
@@ -2266,6 +2269,50 @@ def _flujo_payload(es_ingreso):
         "cobertura_concepto": (float(cobertura_concepto) if not es_ingreso else None),
     }
 
+def _nomina_payload():
+    """Datos de 'Nómina' para el componente React -- el arbol de 3 niveles
+    (aduana -> empleado -> percepcion) ya se armaba completo de una sola vez
+    para el drill-down animado (ver _construir_arbol_nomina); aqui se reusa
+    tal cual, mas los 2 KPIs del resumen ejecutivo."""
+    if sueldos_f.empty:
+        return None
+    tot_nomina = float(sueldos_f["total"].sum())
+    pct_gasto_op = (tot_nomina / TOT_REC) if TOT_REC else None
+    mes_txt = sel_labels[-1] if sel_labels else "—"
+    return {"mes_txt": mes_txt, "tot_nomina": tot_nomina, "pct_gasto_op": pct_gasto_op,
+           "arbol": _construir_arbol_nomina(sueldos_f)}
+
+def _tarjeta_payload():
+    """Datos de 'Tarjeta de Crédito' para el componente React -- misma logica
+    de agrupacion que el bloque viejo (dona anidada + KPIs + gauge), uno por
+    tarjetahabiente (Alejandro/Josefa)."""
+    resultado = []
+    for nombre, amex_df in [("Alejandro", amex_alejandro_df), ("Josefa", amex_josefa_df)]:
+        amex_f = amex_df[amex_df["periodo_label"].isin(sel_labels)] if not amex_df.empty else amex_df
+        if amex_f.empty:
+            resultado.append({"nombre": nombre, "tiene_datos": False})
+            continue
+        total_gastado = float(amex_f["monto"].sum())
+        movimientos = int(len(amex_f))
+        facturados = int(amex_f["facturado"].sum())
+        monto_facturado = float(amex_f.loc[amex_f["facturado"], "monto"].sum())
+        monto_no_facturado = total_gastado - monto_facturado
+        # Igual que antes: solo se agrupan los proveedores de caseta/peaje
+        # ("PASE...") bajo "PASE" -- el resto se queda cada uno su propia
+        # rebanada, a pedido del usuario (no un cajon generico de "Otros").
+        es_pase = amex_f["proveedor"].str.contains("PASE", case=False, na=False)
+        proveedor_agrupado = amex_f["proveedor"].where(~es_pase, "PASE")
+        por_prov = amex_f.groupby(proveedor_agrupado)["monto"].sum().sort_values(ascending=False)
+        resultado.append({
+            "nombre": nombre, "tiene_datos": True, "total_gastado": total_gastado,
+            "movimientos": movimientos, "facturados": facturados,
+            "no_facturados": movimientos - facturados, "monto_facturado": monto_facturado,
+            "monto_no_facturado": monto_no_facturado,
+            "pct_facturado": (monto_facturado / total_gastado) if total_gastado else 0.0,
+            "por_proveedor": [{"nombre": str(k), "monto": float(v)} for k, v in por_prov.items()],
+        })
+    return resultado
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PANORAMA
 # ══════════════════════════════════════════════════════════════════════════════
@@ -2276,6 +2323,8 @@ if pagina in PAGINAS_REDISENADAS:
         "utilidad_operativa": _uo_payload(),
         "gastos": _flujo_payload(es_ingreso=False),
         "ingresos": _flujo_payload(es_ingreso=True),
+        "nomina": _nomina_payload(),
+        "tarjeta_credito": _tarjeta_payload(),
         "colores": {"azul": JOCS_AZUL, "verde": JOCS_VERDE, "neg": C_NEG, "margen": C_MARGEN, "ppto": "#9DBFE8"},
     }
     _dash_resultado = _dashboard_component(datos=_dash_payload, key="fac_dashboard", default=None)
@@ -2457,7 +2506,11 @@ if False:  # CODIGO MUERTO, pendiente de borrar: Utilidad Operativa ahora se
 # ══════════════════════════════════════════════════════════════════════════════
 # NÓMINA
 # ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Nómina":
+if False:  # CODIGO MUERTO, pendiente de borrar: Nomina ahora se resuelve
+          # arriba, en "if pagina in PAGINAS_REDISENADAS:" (componente React
+          # unico, ver _nomina_payload()). Se deja sin quitar por ahora para
+          # no perder las formulas si hace falta revisarlas; no se ejecuta
+          # nunca.
     st.title("Nómina (Capital Humano)")
     st.caption(f"{', '.join(sel_labels)} · Nómina real por empleado (hoja 'sueldos')")
 
@@ -2546,7 +2599,11 @@ if pagina == "Nómina":
 # ══════════════════════════════════════════════════════════════════════════════
 # TARJETA DE CRÉDITO
 # ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Tarjeta de Crédito":
+if False:  # CODIGO MUERTO, pendiente de borrar: Tarjeta de Credito ahora se
+          # resuelve arriba, en "if pagina in PAGINAS_REDISENADAS:"
+          # (componente React unico, ver _tarjeta_payload()). Se deja sin
+          # quitar por ahora para no perder las formulas si hace falta
+          # revisarlas; no se ejecuta nunca.
     st.title("Tarjeta de Crédito")
     st.caption(f"{', '.join(sel_labels)} · Fuente: Movimientos AMEX Alejandro y Movimientos AMEX Josefa")
     st.caption("'Facturado' = el movimiento ya trae un UUID de factura conciliado en el Sheets "
