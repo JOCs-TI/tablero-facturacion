@@ -15,15 +15,15 @@ from pathlib import Path
 
 alt.data_transformers.disable_max_rows()
 
+BASE = Path(__file__).parent
+LOGO_PATH = BASE / "imagenes" / "jocs_logo.png"
+
 st.set_page_config(
     page_title="Facturación Emitida y Recibida",
-    page_icon=None,
+    page_icon=str(LOGO_PATH),
     layout="wide",
     initial_sidebar_state="expanded",
 )
-
-BASE = Path(__file__).parent
-LOGO_PATH = BASE / "imagenes" / "jocs_logo.png"
 
 # Fuente de datos: Google Sheets en vivo (antes: Excel local, que vivia fuera de
 # Google Drive porque los .xlsx sincronizados se corrompian solos). La hoja esta
