@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.15.0/umd/Recharts.js"></script>
+<style>
+:root {
+  --bg: #F4F5F7; --card: #FFFFFF; --border: #E3E6EA;
+  --text: #1C2A3A; --sub: #6B7280;
+  --pos-bg: #E6F4EA; --pos-txt: #1E7E34;
+  --neg-bg: #FDEAEA; --neg-txt: #C0392B;
+  --azul: #244072; --ambar: #c98a2e;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); font-family: 'Segoe UI', system-ui, Roboto, sans-serif; }
+#root { padding: 18px 22px 40px; }
+.topnav { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+.topnav button {
+  border: none; background: transparent; padding: 7px 14px; font-size: 13px;
+  color: var(--sub); cursor: pointer; border-radius: 8px; font-family: inherit; font-weight: 600;
+}
+.topnav button:hover { background: #E9EBEE; }
+.topnav button.active { background: var(--azul); color: #fff; }
+.topnav .sep { width: 1px; background: var(--border); margin: 4px 6px; }
+.dash-header { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 16px; }
+.dash-header-left { display: flex; align-items: center; gap: 12px; }
+.dash-header-icon { width: 40px; height: 40px; border-radius: 10px; background: var(--azul); display: flex; align-items: center; justify-content: center; font-size: 19px; flex-shrink: 0; }
+.dash-header h1 { margin: 0; font-size: 24px; color: var(--text); }
+.dash-header p { margin: 0; font-size: 12.5px; color: var(--sub); }
+.filtro-pill { display: flex; align-items: center; gap: 7px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; }
+.filtro-pill .fp-label { font-size: 10px; color: var(--sub); display: block; }
+.filtro-pill .fp-value { font-size: 12px; color: var(--text); font-weight: 700; display: block; }
+.grid-row { display: grid; gap: 16px; margin-bottom: 16px; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(16,24,40,0.06); height: 100%; }
+.card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
+.card-icon { width: 32px; height: 32px; border-radius: 50%; background: #EAF1FB; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+.card-title { font-size: 15px; font-weight: 700; color: var(--text); margin: 0; }
+.card-subtitle { font-size: 12px; color: var(--sub); margin: 2px 0 14px 42px; }
+.stat-grid { display: flex; flex-wrap: wrap; gap: 14px; height: 100%; }
+.stat-card { flex: 1 1 210px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(16,24,40,0.06); }
+.stat-top { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.stat-icon { width: 26px; height: 26px; border-radius: 50%; background: #EAF1FB; display: flex; align-items: center; justify-content: center; font-size: 12px; flex-shrink: 0; }
+.stat-label { font-size: 12px; color: var(--sub); font-weight: 600; }
+.stat-value { font-size: 21px; font-weight: 800; color: var(--text); margin: 1px 0; line-height: 1.2; }
+.stat-sub { font-size: 11px; color: var(--sub); margin-top: 4px; }
+.badge { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.badge-pos { background: var(--pos-bg); color: var(--pos-txt); }
+.badge-neg { background: var(--neg-bg); color: var(--neg-txt); }
+.badge-off { background: #EEF0F3; color: var(--sub); }
+.dtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dtable th { text-align: left; color: var(--sub); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.dtable td { padding: 7px 8px; border-bottom: 1px solid #F0F1F3; color: var(--text); }
+.dtable tr:last-child td { border-bottom: none; font-weight: 700; }
+.dtable td.num, .dtable th.num { text-align: right; white-space: nowrap; }
+.rank-row { display: flex; align-items: center; gap: 10px; margin-bottom: 11px; }
+.rank-num { width: 18px; font-size: 12px; color: var(--sub); font-weight: 700; flex-shrink: 0; }
+.rank-name { width: 170px; font-size: 12px; color: var(--text); flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rank-bar-track { flex: 1; background: #EEF0F3; border-radius: 4px; height: 11px; }
+.rank-bar-fill { height: 100%; border-radius: 4px; }
+.rank-val { width: 92px; text-align: right; font-size: 11.5px; color: var(--text); font-weight: 600; flex-shrink: 0; }
+.rank-pct { width: 46px; text-align: right; font-size: 12px; color: var(--text); font-weight: 700; flex-shrink: 0; }
+.empty-state { display: flex; align-items: center; justify-content: center; color: var(--sub); font-size: 13px; text-align: center; padding: 30px 20px; height: 100%; }
+.conc-row { display: flex; gap: 14px; margin-top: 12px; }
+.conc-item { flex: 1; text-align: center; }
+.conc-label { font-size: 11.5px; color: var(--sub); margin-bottom: 4px; }
+.conc-value { font-size: 19px; font-weight: 800; color: var(--azul); }
+.mini-stat { display: flex; align-items: center; gap: 8px; }
+.mini-stat .mini-val { font-size: 15px; font-weight: 800; color: var(--text); line-height: 1.15; }
+.mini-stat .mini-label { font-size: 11px; color: var(--sub); }
+select.aduana-select, .seg-control { font-family: inherit; }
+select.aduana-select {
+  width: 100%; padding: 9px 12px; font-size: 13px; border: 1px solid var(--border);
+  border-radius: 8px; background: var(--card); color: var(--text); margin-bottom: 10px;
+}
+.seg-control { display: inline-flex; background: #EEF0F3; border-radius: 8px; padding: 3px; margin-bottom: 10px; }
+.seg-control button {
+  border: none; background: transparent; padding: 6px 14px; font-size: 12.5px; font-weight: 600;
+  color: var(--sub); cursor: pointer; border-radius: 6px; font-family: inherit;
+}
+.seg-control button.active { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(16,24,40,0.1); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+/* Puente minimo al protocolo de Streamlit Components (postMessage), identico
+   al ya usado en components/treemap_click/index.html de este mismo tablero. */
+const Streamlit = {
+  _send(payload) { window.parent.postMessage(Object.assign({ isStreamlitMessage: true }, payload), "*"); },
+  init() {
+    window.addEventListener("message", (event) => {
+      const d = event.data;
+      if (!d || d.type !== "streamlit:render") return;
+      render((d.args) || {});
+    });
+    this._send({ type: "streamlit:componentReady", apiVersion: 1 });
+  },
+  setComponentValue(value) { this._send({ type: "streamlit:setComponentValue", value: value, dataType: "json" }); },
+  setFrameHeight(height) { this._send({ type: "streamlit:setFrameHeight", height: height }); },
+};
+
+const h = React.createElement;
+const { useState, useMemo } = React;
+const { ResponsiveContainer, BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+        XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, LabelList } = Recharts;
+
+const ICONOS = {
+  money: "💵", target: "🎯", people: "👥", chart: "📊", building: "🏢", trophy: "🏆",
+  box: "📦", trend: "📈", calendar: "📅", year: "📆", filtro: "🗂️", pin: "📍",
+  stack: "🗃️", gauge: "⏱️", list: "📋", doc: "📄", hex: "⬡",
+};
+const PALETA = ["#244072", "#507058", "#8a6d4b", "#4a7fa8", "#7a9e6e", "#c98a2e",
+                "#6f5c8a", "#9aa5b1", "#a45c6b", "#3f8f8a"];
+function colorFor(i) { return i === -1 ? "#c9cdd3" : PALETA[i % PALETA.length]; }
+
+function fmt(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  const s = v < 0 ? "-$" : "$";
+  return s + Math.round(Math.abs(v)).toLocaleString("en-US");
+}
+function pct(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return (v >= 0 ? "+" : "") + (v * 100).toFixed(1) + "%";
+}
+
+/* ── Piezas basicas (iguales a las tarjetas HTML que ya se usaban, ahora */
+/*    como componentes React de verdad) ─────────────────────────────── */
+function CardHeader(props) {
+  return h("div", { className: "card-header" },
+    h("div", { className: "card-icon" }, ICONOS[props.icono] || "•"),
+    h("p", { className: "card-title" }, props.titulo),
+    props.badge ? h("span", { className: "badge badge-off", style: { marginLeft: "auto" } }, props.badge) : null
+  );
+}
+
+function Badge(props) {
+  if (!props.texto) return null;
+  const cls = props.positivo === true ? "badge-pos" : props.positivo === false ? "badge-neg" : "badge-off";
+  const flecha = props.positivo === true ? "▲ " : props.positivo === false ? "▼ " : "";
+  return h("span", { className: "badge " + cls }, flecha + props.texto);
+}
+
+function StatGrid(props) {
+  return h("div", { className: "card", style: { padding: 0, border: "none", background: "transparent", boxShadow: "none" } },
+    h("div", { className: "stat-grid" }, props.cards.map((c, i) => h("div", { className: "stat-card", key: i },
+      h("div", { className: "stat-top" },
+        h("div", { className: "stat-icon" }, ICONOS[c.icono] || "•"),
+        h("div", { className: "stat-label" }, c.label)),
+      h("div", { className: "stat-value" }, c.valor),
+      h(Badge, { texto: c.deltaTxt, positivo: c.deltaPos }),
+      c.sub ? h("div", { className: "stat-sub" }, c.sub) : null,
+      c.barra ? h(BarraRealPpto, c.barra) : null
+    )))
+  );
+}
+
+function BarraRealPpto(props) {
+  const { real, ppto, color } = props;
+  if (!ppto || ppto <= 0) return null;
+  const techo = Math.max(real, ppto) * 1.15 || 1;
+  const fracReal = Math.max(0, Math.min(1, real / techo)) * 100;
+  const fracPpto = Math.max(0, Math.min(1, ppto / techo)) * 100;
+  return h("div", { style: { position: "relative", height: 12, background: "#eceff2", borderRadius: 3, margin: "8px 0 2px" } },
+    h("div", { style: { position: "absolute", left: 0, top: 0, height: "100%", width: fracReal + "%", background: color, borderRadius: 3 } }),
+    h("div", { style: { position: "absolute", left: fracPpto + "%", top: -2, height: 16, width: 2, background: "var(--ambar)" } })
+  );
+}
+
+function EmptyCard(props) {
+  return h("div", { className: "card" },
+    h(CardHeader, { icono: props.icono, titulo: props.titulo }),
+    props.subtitulo ? h("p", { className: "card-subtitle" }, props.subtitulo) : null,
+    h("div", { className: "empty-state" }, props.mensaje));
+}
+
+function BarChartCard(props) {
+  const { icono, titulo, subtitulo, categorias, real, ppto, nombreReal, nombrePpto, colorReal, colorPpto, nota } = props;
+  const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i] }));
+  return h("div", { className: "card" },
+    h(CardHeader, { icono, titulo }),
+    h("p", { className: "card-subtitle" }, subtitulo),
+    h("div", { style: { height: 230 } },
+      h(ResponsiveContainer, { width: "100%", height: "100%" },
+        h(BarChart, { data, margin: { top: 6, right: 10, left: 0, bottom: 0 } },
+          h(CartesianGrid, { strokeDasharray: "3 3", vertical: false }),
+          h(XAxis, { dataKey: "cat", tick: { fontSize: 11, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
+          h(YAxis, { tickFormatter: fmt, tick: { fontSize: 10, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
+          h(Tooltip, { formatter: (v) => fmt(v) }),
+          h(Legend, { wrapperStyle: { fontSize: 12 } }),
+          h(Bar, { dataKey: "real", name: nombreReal, fill: colorReal, radius: [3, 3, 0, 0], maxBarSize: 46 }),
+          h(Bar, { dataKey: "ppto", name: nombrePpto, fill: colorPpto, radius: [3, 3, 0, 0], maxBarSize: 46 })
+        ))),
+    nota ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)", textAlign: "center" } }, nota) : null
+  );
+}
+
+function LineChartCard(props) {
+  const { icono, titulo, subtitulo, categorias, real, ppto, nombreReal, nombrePpto, colorReal, colorPpto, nota, pctMode } = props;
+  const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i] }));
+  const fmtEje = pctMode ? ((v) => (v * 100).toFixed(2) + "%") : fmt;
+  return h("div", { className: "card" },
+    h(CardHeader, { icono, titulo }),
+    h("p", { className: "card-subtitle" }, subtitulo),
+    h("div", { style: { height: 230 } },
+      h(ResponsiveContainer, { width: "100%", height: "100%" },
+        h(LineChart, { data, margin: { top: 6, right: 10, left: 0, bottom: 0 } },
+          h(CartesianGrid, { strokeDasharray: "3 3", vertical: false }),
+          h(XAxis, { dataKey: "cat", tick: { fontSize: 11, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
+          h(YAxis, { tickFormatter: fmtEje, tick: { fontSize: 10, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
+          h(Tooltip, { formatter: (v) => fmtEje(v) }),
+          h(Legend, { wrapperStyle: { fontSize: 12 } }),
+          h(Line, { type: "monotone", dataKey: "real", name: nombreReal, stroke: colorReal, strokeWidth: 3, dot: { r: 4 } }),
+          h(Line, { type: "monotone", dataKey: "ppto", name: nombrePpto, stroke: colorPpto, strokeWidth: 2, strokeDasharray: "5 3", dot: { r: 4 } })
+        ))),
+    nota ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)", textAlign: "center" } }, nota) : null
+  );
+}
+
+function DonutDetalleCard(props) {
+  const { titulo, subtitulo, serieDona, totalTxt, subtotalTxt, tituloTabla, tituloCol1, filasTabla } = props;
+  const tot = serieDona.reduce((s, d) => s + d.monto, 0) || 1;
+  const data = serieDona.map((d, i) => ({ nombre: d.concepto, valor: d.monto, color: colorFor(d.concepto === "Otros" ? -1 : i) }));
+  const totTabla = filasTabla.reduce((s, f) => s + f.monto, 0) || 1;
+  return h("div", { className: "card" },
+    h(CardHeader, { icono: "chart", titulo }),
+    h("p", { className: "card-subtitle" }, subtitulo),
+    h("div", { style: { display: "flex", gap: 10, alignItems: "center" } },
+      h("div", { style: { flex: "0 0 36%", position: "relative" } },
+        h("div", { style: { height: 170 } },
+          h(ResponsiveContainer, { width: "100%", height: "100%" },
+            h(PieChart, {},
+              h(Pie, { data, dataKey: "valor", nameKey: "nombre", innerRadius: 44, outerRadius: 75, paddingAngle: 1 },
+                data.map((d, i) => h(Cell, { key: i, fill: d.color, stroke: "#fff", strokeWidth: 2 }))),
+              h(Tooltip, { formatter: (v) => fmt(v) })))),
+        h("div", { style: { position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" } },
+          h("div", { style: { fontSize: 13, fontWeight: 800, color: "var(--azul)" } }, totalTxt),
+          h("div", { style: { fontSize: 9.5, color: "var(--sub)" } }, subtotalTxt))),
+      h("div", { style: { flex: 1, minWidth: 0 } },
+        h("table", { className: "dtable", style: { fontSize: "10.5px", tableLayout: "fixed", width: "100%" } },
+          h("colgroup", {}, h("col", { style: { width: "42%" } }), h("col", { style: { width: "22%" } }),
+                          h("col", { style: { width: "16%" } }), h("col", { style: { width: "20%" } })),
+          h("tbody", {},
+            h("tr", {}, h("th", {}, "Concepto"), h("th", { className: "num" }, "Monto"),
+                       h("th", { className: "num" }, "%"), h("th", { className: "num" }, "Var.")),
+            data.map((d, i) => h("tr", { key: i },
+              h("td", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 } },
+                h("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: d.color, marginRight: 5 } }),
+                d.nombre),
+              h("td", { className: "num" }, fmt(d.valor)),
+              h("td", { className: "num" }, (d.valor / tot * 100).toFixed(1) + "%"),
+              h("td", { className: "num", style: { color: "var(--sub)" } }, "—")))
+          )))),
+    h("p", { className: "card-title", style: { fontSize: 13, margin: "14px 0 8px" } }, tituloTabla),
+    h("div", { style: { maxHeight: 220, overflowY: "auto" } },
+      h("table", { className: "dtable" },
+        h("tbody", {},
+          h("tr", {}, h("th", {}, tituloCol1), h("th", { className: "num" }, "Monto actual"),
+                     h("th", { className: "num" }, "% Part."), h("th", { className: "num" }, "Monto anterior"),
+                     h("th", { className: "num" }, "Var. $"), h("th", { className: "num" }, "Var. %")),
+          filasTabla.map((f, i) => h("tr", { key: i },
+            h("td", {}, f.concepto), h("td", { className: "num" }, fmt(f.monto)),
+            h("td", { className: "num" }, pct(f.monto / totTabla).replace("+", "+")),
+            h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
+            h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
+            h("td", { className: "num", style: { color: "var(--sub)" } }, "—"))),
+          h("tr", {}, h("td", {}, "Total"), h("td", { className: "num" }, fmt(totTabla)),
+                     h("td", { className: "num" }, "100%"), h("td", { className: "num" }, "—"),
+                     h("td", { className: "num" }, "—"), h("td", { className: "num" }, "—"))
+        ))));
+}
+
+function RankingConcentracionCard(props) {
+  const { titulo, subtitulo, badge, items, color, etqContraparte, etqContraparteSing } = props;
+  const tot = items.reduce((s, d) => s + d.monto, 0) || 1;
+  const maxv = Math.max(...items.map((d) => d.monto), 1);
+  const ordenado = [...items].sort((a, b) => b.monto - a.monto);
+  const top5 = ordenado.slice(0, 5).reduce((s, d) => s + d.monto, 0) / tot;
+  const top10 = ordenado.slice(0, 10).reduce((s, d) => s + d.monto, 0) / tot;
+  const principal = ordenado.length ? ordenado[0].monto / tot : 0;
+  return h("div", { className: "card" },
+    h(CardHeader, { icono: "people", titulo, badge }),
+    h("p", { className: "card-subtitle" }, subtitulo),
+    items.map((it, i) => h("div", { className: "rank-row", key: i },
+      h("div", { className: "rank-num" }, i + 1),
+      h("div", { className: "rank-name", title: it.nombre }, it.nombre),
+      h("div", { className: "rank-bar-track" }, h("div", { className: "rank-bar-fill", style: { width: (it.monto / maxv * 100) + "%", background: color } })),
+      h("div", { className: "rank-val" }, fmt(it.monto)),
+      h("div", { className: "rank-pct" }, (it.monto / tot * 100).toFixed(1) + "%"))),
+    h("div", { style: { borderTop: "1px solid var(--border)", marginTop: 6, paddingTop: 12 } },
+      h("div", { className: "card-header", style: { marginBottom: 0 } },
+        h("div", { className: "card-icon" }, ICONOS.trophy),
+        h("p", { className: "card-title", style: { fontSize: 13 } }, "Concentración")),
+      h("div", { className: "conc-row" },
+        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, "Top 5 " + etqContraparte.toLowerCase()), h("div", { className: "conc-value" }, pct(top5))),
+        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, "Top 10 " + etqContraparte.toLowerCase()), h("div", { className: "conc-value" }, pct(top10))),
+        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, etqContraparteSing + " principal"), h("div", { className: "conc-value" }, pct(principal))))));
+}
+
+function RankingAduanaCard(props) {
+  const { titulo, subtitulo, consolidadoTxt, items, color, modo, onModo, nTotal } = props;
+  const real = items.map((d) => d.real);
+  const pptos = items.map((d) => d.ppto).filter((v) => v !== null && v !== undefined);
+  const piso = Math.min(0, ...real, ...pptos) * 1.15;
+  const techo = Math.max(...real, ...pptos, 1) * 1.15;
+  function BarraReal(p) {
+    const { x, y, width, height, payload } = p;
+    const xReal = width < 0 ? x + width : x;
+    const wReal = Math.abs(width);
+    const pxPorUnidad = payload.real !== 0 ? width / payload.real : 0;
+    const els = [h("rect", { key: "r", x: xReal, y, width: wReal, height, fill: color, rx: 3 })];
+    if (payload.ppto != null && pxPorUnidad !== 0) {
+      const xPpto = x + pxPorUnidad * payload.ppto;
+      els.push(h("line", { key: "p", x1: xPpto, x2: xPpto, y1: y - 4, y2: y + height + 4, stroke: "var(--ambar)", strokeWidth: 3 }));
+    }
+    return h("g", {}, els);
+  }
+  function EtiquetaDelta(p) {
+    /* position="right" de LabelList coloca el texto en x+width, que para
+       una barra negativa (width<0) cae del lado izquierdo y se encima con
+       las etiquetas del eje Y -- este render a mano ancla siempre el texto
+       al extremo EXTERIOR de la barra (derecha si crece a la derecha,
+       izquierda si crece a la izquierda). */
+    const { x, y, width, height, value } = p;
+    if (!value) return null;
+    const afuera = width < 0 ? x + width - 6 : x + width + 6;
+    const anchor = width < 0 ? "end" : "start";
+    return h("text", { x: afuera, y: y + height / 2, dy: 4, fontSize: 11, fill: "#3d4752", textAnchor: anchor }, value);
+  }
+  return h("div", { className: "card" },
+    h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 } },
+      h(CardHeader, { icono: "chart", titulo }),
+      h("div", { className: "seg-control" },
+        h("button", { className: modo === "top5" ? "active" : "", onClick: () => onModo("top5") }, "Top 5"),
+        h("button", { className: modo === "todas" ? "active" : "", onClick: () => onModo("todas") }, "Todas"))),
+    h("p", { className: "card-subtitle" }, subtitulo),
+    h("p", { style: { margin: "0 0 10px", fontSize: 13 } }, h("b", {}, consolidadoTxt)),
+    h("div", { style: { height: Math.max(220, 36 * items.length) } },
+      h(ResponsiveContainer, { width: "100%", height: "100%" },
+        h(BarChart, { data: items, layout: "vertical", margin: { top: 10, right: 70, left: 10, bottom: 10 } },
+          h(CartesianGrid, { strokeDasharray: "3 3", horizontal: false }),
+          h(XAxis, { type: "number", domain: [piso, techo], allowDataOverflow: true, tickFormatter: fmt, tick: { fontSize: 11, fill: "#54616f" }, axisLine: { stroke: "#d7dce1" } }),
+          h(YAxis, { dataKey: "aduana", type: "category", width: 110, tick: { fontSize: 11, fill: "#54616f" }, axisLine: { stroke: "#d7dce1" } }),
+          h(Tooltip, { formatter: (v, n, p) => [fmt(p.payload.real), "Real"] }),
+          h(ReferenceLine, { x: 0, stroke: "#9aa5b1" }),
+          h(Bar, { dataKey: "real", shape: BarraReal }, h(LabelList, { dataKey: "deltaTxt", content: EtiquetaDelta }))
+        ))),
+    modo === "top5" && nTotal > 5 ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)" } }, `Se muestran 5 de ${nTotal} aduanas. Cambia a "Todas" para verlas completas.`) : null
+  );
+}
+
+function EstadoResultadosCard(props) {
+  const { mesTxt, er } = props;
+  const fila = (nombre, obj, indent) => h("tr", { key: nombre },
+    h("td", {}, (indent ? "    " : "") + nombre),
+    h("td", { className: "num" }, fmt(obj.real)), h("td", { className: "num" }, fmt(obj.ppto)),
+    h("td", { className: "num" }, obj.ppto ? pct(obj.real / obj.ppto - 1) : "—"),
+    h("td", { className: "num" }, fmt(obj.ppto_anual)));
+  const cg = {
+    real: er.costos_referencia.real + er.sueldos.real + er.gastos_operativos.real,
+    ppto: (er.costos_referencia.ppto || 0) + (er.sueldos.ppto || 0) + (er.gastos_operativos.ppto || 0),
+    ppto_anual: (er.costos_referencia.ppto_anual || 0) + (er.sueldos.ppto_anual || 0) + (er.gastos_operativos.ppto_anual || 0),
+  };
+  return h("div", { className: "card" },
+    h(CardHeader, { icono: "doc", titulo: "Estado de Resultados" }),
+    h("p", { className: "card-subtitle" },
+      `Mes: ${mesTxt}. Vista acumulada y comparativo contra 2025 pendientes de histórico (ver Resumen Ejecutivo). "Ppto. anual" es una proyección simple (acumulado a la fecha ÷ meses transcurridos × 12), no una meta anual real.`),
+    h("table", { className: "dtable" },
+      h("tbody", {},
+        h("tr", {}, h("th", {}, "Concepto"), h("th", { className: "num" }, "Real"), h("th", { className: "num" }, "Presupuesto"),
+                   h("th", { className: "num" }, "Var. %"), h("th", { className: "num" }, "Ppto. anual (proyectado)")),
+        fila("Ingresos", er.ingresos, false), fila("Costos y gastos", cg, false),
+        fila("Costos de Referencia", er.costos_referencia, true), fila("Sueldos", er.sueldos, true),
+        fila("Gastos Operativos", er.gastos_operativos, true), fila("Utilidad Operativa", er.utilidad, false))));
+}
+
+function ResumenAduanaGastosCard(props) {
+  const { datos, aduanaSel, setAduana, tot } = props;
+  const opciones = datos.map((d) => d.aduana);
+  const info = datos.find((d) => d.aduana === aduanaSel) || datos[0] || {};
+  return h("div", { className: "card" },
+    h(CardHeader, { icono: "pin", titulo: "Resumen de la aduana" }),
+    h("select", { className: "aduana-select", value: aduanaSel, onChange: (e) => setAduana(e.target.value) },
+      opciones.map((a) => h("option", { key: a, value: a }, a))),
+    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
+      h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
+        h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Gasto total del mes"))),
+      h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.hex),
+        h("div", {}, h("div", { className: "mini-val" }, fmt(info.costos_referencia)),
+          h("div", { className: "mini-label" }, `Costos de referencia · ${info.total ? pct(info.costos_referencia_pct) : "—"} del gasto`))),
+      h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.list),
+        h("div", {}, h("div", { className: "mini-val" }, info.n_operaciones), h("div", { className: "mini-label" }, "Número de operaciones"))),
+      h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.chart),
+        h("div", {}, h("div", { className: "mini-val" }, tot ? pct(info.total / tot) : "—"), h("div", { className: "mini-label" }, "% del gasto total")))));
+}
+
+function ResumenAduanaIngresosCard(props) {
+  const { datos, aduanaSel, setAduana } = props;
+  const opciones = datos.map((d) => d.aduana);
+  const info = datos.find((d) => d.aduana === aduanaSel) || datos[0] || { conceptos: [] };
+  return h("div", { className: "card" },
+    h(CardHeader, { icono: "pin", titulo: "Resumen de la aduana" }),
+    h("select", { className: "aduana-select", value: aduanaSel, onChange: (e) => setAduana(e.target.value) },
+      opciones.map((a) => h("option", { key: a, value: a }, a))),
+    h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
+      h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
+        h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Ingreso total del mes"))),
+      h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.list),
+        h("div", {}, h("div", { className: "mini-val" }, info.n_operaciones), h("div", { className: "mini-label" }, "Número de operaciones")))),
+    h("p", { className: "card-title", style: { fontSize: 12.5, margin: "0 0 8px" } }, "Ingresos por concepto (mes)"),
+    (info.conceptos || []).map((c, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 5 } },
+      h("span", { style: { color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 } }, c.nombre),
+      h("span", { style: { color: "var(--sub)", fontWeight: 600 } }, (c.pct * 100).toFixed(1) + "%"))));
+}
+
+/* ── Paginas ──────────────────────────────────────────────────────────── */
+function UtilidadOperativaPage(props) {
+  const { datos, colores } = props;
+  const [modoRank, setModoRank] = useState("top5");
+  if (!datos) return h(EmptyCard, { icono: "chart", titulo: "Utilidad Operativa", mensaje: "Sin datos de Utilidad Operativa para el periodo y aduana seleccionados." });
+
+  const kpiCards = [
+    { nombre: "Ingresos", icono: "money", key: "ingreso", pkey: "ingresos", color: colores.azul },
+    { nombre: "Costos de Referencia", icono: "target", key: "costos_referencia", pkey: "costos", color: colores.neg },
+    { nombre: "Gastos Operativos", icono: "stack", key: "gastos_operativos", pkey: "gastos", color: colores.verde },
+    { nombre: "Utilidad Operativa", icono: "trend", key: "utilidad", pkey: "utilidad", color: colores.margen },
+  ].map((c) => {
+    const realVal = datos.por_aduana.reduce((s, a) => s + a[c.key], 0);
+    const pptoVal = datos.tiene_ppto ? datos.ppto_por_aduana.reduce((s, a) => s + a[c.pkey], 0) : null;
+    const delta = pptoVal ? realVal / pptoVal - 1 : null;
+    return {
+      icono: c.icono, label: c.nombre, valor: fmt(realVal),
+      sub: datos.tiene_ppto ? `Ppto: ${fmt(pptoVal)}` + (delta !== null ? ` · ${pct(delta)} vs ppto` : "") : "Ppto no disponible",
+      barra: datos.tiene_ppto ? { real: realVal, ppto: pptoVal, color: c.color } : null,
+    };
+  });
+
+  const orden = [...datos.por_aduana].sort((a, b) => b.utilidad - a.utilidad);
+  const nTotal = orden.length;
+  const visibles = modoRank === "top5" ? orden.slice(0, 5) : orden;
+  const pptoMap = {}; (datos.ppto_por_aduana || []).forEach((p) => { pptoMap[p.aduana] = p.utilidad; });
+  const rankItems = visibles.map((a) => {
+    const ppto = datos.tiene_ppto ? pptoMap[a.aduana] : null;
+    return { aduana: a.aduana, real: a.utilidad, ppto: ppto != null ? ppto : null,
+             deltaTxt: ppto ? pct(a.utilidad / ppto - 1) : "" };
+  });
+  const utilidadTotal = datos.por_aduana.reduce((s, a) => s + a.utilidad, 0);
+  const ingresoTotal = datos.por_aduana.reduce((s, a) => s + a.ingreso, 0);
+  const margenCons = ingresoTotal ? utilidadTotal / ingresoTotal : null;
+  const consolidadoTxt = `Utilidad consolidada: ${fmt(utilidadTotal)}` + (margenCons !== null ? ` · Margen ${pct(margenCons)}` : "");
+
+  return h(React.Fragment, {},
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(4, 1fr)" } },
+      ...kpiCards.map((c, i) => h("div", { key: i, className: "stat-card" },
+        h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS[c.icono]), h("div", { className: "stat-label" }, c.label)),
+        h("div", { className: "stat-value" }, c.valor),
+        h("div", { className: "stat-sub" }, c.sub),
+        c.barra ? h(BarraRealPpto, c.barra) : null))),
+    h("p", { style: { fontSize: 12, color: "var(--sub)", margin: "0 0 16px" } },
+      "Acumulado y avance contra presupuesto anual pendientes de cargar el histórico real mes a mes (hoy solo hay un mes de datos reales en vivo)."),
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "1fr" } },
+      h(RankingAduanaCard, { titulo: "Rentabilidad por Aduana",
+        subtitulo: "Utilidad Operativa real (barra) vs. presupuesto del mes (marca ámbar).",
+        consolidadoTxt, items: rankItems, color: colores.azul, modo: modoRank, onModo: setModoRank, nTotal })),
+    datos.tiene_ppto ? h("div", { className: "grid-row", style: { gridTemplateColumns: "1fr" } },
+      h(EstadoResultadosCard, { mesTxt: datos.mes_txt, er: datos.estado_resultados })) : null
+  );
+}
+
+function FlujoPage(props) {
+  const { datos, esIngreso, colores } = props;
+  const [aduanaSel, setAduanaSel] = useState(datos ? datos.por_aduana[0].aduana : null);
+  if (!datos) return h(EmptyCard, { icono: "chart", titulo: esIngreso ? "Análisis de Ingresos" : "Análisis de Gastos", mensaje: "Sin datos para el periodo y aduana seleccionados." });
+
+  const etqTitulo = esIngreso ? "Ingresos" : "Gastos";
+  const etqSing = esIngreso ? "Ingreso" : "Gasto";
+  const etqContraparte = esIngreso ? "Clientes" : "Proveedores";
+  const etqContraparteSing = esIngreso ? "Cliente" : "Proveedor";
+  const colorReal = esIngreso ? colores.azul : colores.azul;
+  const k = datos.kpis;
+
+  const kpiCards = [
+    { icono: "money", label: `${etqSing} del mes`, valor: fmt(k.tot_mes), sub: datos.mes_txt },
+    { icono: "stack", label: `${etqSing} acumulado`, valor: "No disponible" },
+    { icono: "target", label: "Presupuesto del mes", valor: k.ppto_mes_tot ? fmt(k.ppto_mes_tot) : "No disponible",
+      deltaTxt: k.cumplimiento !== null ? (k.cumplimiento * 100).toFixed(0) + "% de cumplimiento" : null,
+      deltaPos: k.cumplimiento !== null ? k.cumplimiento >= 1 : null },
+    { icono: "trend", label: "Presupuesto acumulado", valor: k.ppto_acum_tot ? fmt(k.ppto_acum_tot) : "No disponible" },
+  ];
+  const kpiCards2 = esIngreso ? null : [
+    { icono: "people", label: "Proveedores activos", valor: String(k.n_contrapartes) },
+    { icono: "gauge", label: "Resultado operativo", valor: fmt(k.margen),
+      deltaTxt: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, deltaPos: k.margen_pct >= 0 },
+    { icono: "trend", label: "Variación vs. mes anterior", valor: "No disponible" },
+  ];
+
+  const nota = "1 de 12 meses cargados · se completa con más histórico";
+  const variacion = k.ppto_mes_tot ? k.tot_mes / k.ppto_mes_tot - 1 : 0;
+
+  const donaSerie = datos.por_concepto.map((c) => ({ concepto: c.concepto, monto: c.monto }));
+  const filasTabla = datos.por_concepto_full.map((c) => ({ concepto: c.concepto, monto: c.monto }));
+
+  return h(React.Fragment, {},
+    esIngreso
+      ? h(React.Fragment, {},
+          h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(4, 1fr)" } },
+            kpiCards.map((c, i) => h(StatCardInline, { key: i, c }))),
+          h("div", { className: "grid-row", style: { gridTemplateColumns: "0.8fr 1.6fr 0.8fr" } },
+            h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.trend), h("div", { className: "stat-label" }, "Crecimiento vs. mes anterior")), h("div", { className: "stat-value" }, "No disponible")),
+            h(BarChartCard, { icono: "chart", titulo: "Evolución de ingresos", subtitulo: "Ingreso real vs. presupuesto mensual",
+              categorias: [datos.mes_txt], real: [k.tot_mes], ppto: [k.ppto_mes_tot || 0],
+              nombreReal: "Ingreso real", nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota }),
+            h("div", { className: "grid-row", style: { gridTemplateColumns: "1fr", margin: 0 } },
+              h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.people), h("div", { className: "stat-label" }, "Clientes activos")), h("div", { className: "stat-value" }, String(k.n_contrapartes))),
+              h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.gauge), h("div", { className: "stat-label" }, "Resultado operativo")),
+                h("div", { className: "stat-value" }, k.margen >= 0 ? "Superávit" : "Déficit"),
+                h(Badge, { texto: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, positivo: k.margen_pct >= 0 })))))
+      : h(React.Fragment, {},
+          h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
+            h(BarChartCard, { icono: "chart", titulo: "Evolución de gastos", subtitulo: "Gasto real vs. presupuesto mensual",
+              categorias: [datos.mes_txt], real: [k.tot_mes], ppto: [k.ppto_mes_tot || 0],
+              nombreReal: "Gasto real", nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota }),
+            h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)", margin: 0 } },
+              kpiCards.map((c, i) => h(StatCardInline, { key: i, c })))),
+          h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(3, 1fr)" } },
+            kpiCards2.map((c, i) => h(StatCardInline, { key: i, c })))),
+
+    h("p", { style: { fontSize: 12, color: "var(--sub)", margin: "0 0 16px" } },
+      "Acumulado, comparativo contra el mes/año anterior y evolución mensual pendientes de cargar histórico real mes a mes (hoy solo hay un mes de datos reales en vivo)."),
+
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
+      h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Tendencia de crecimiento" : "Tendencia de gasto",
+        subtitulo: esIngreso ? "Variación mensual de los ingresos" : "Variación mensual del gasto real vs. presupuesto",
+        categorias: [datos.mes_txt], real: [variacion], ppto: [0], nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
+        nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, pctMode: true, nota }),
+      esIngreso
+        ? h(ResumenAduanaIngresosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel })
+        : h(ResumenAduanaGastosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel, tot: k.tot_mes })),
+
+    !esIngreso && datos.cobertura_concepto !== null && datos.cobertura_concepto < 0.95
+      ? h("p", { style: { fontSize: 12, color: "var(--sub)" } },
+          `Solo el ${(datos.cobertura_concepto * 100).toFixed(0)}% del gasto trae un concepto de cierre asignado en el Excel de origen; el resto aparece como 'Sin categorizar'.`)
+      : null,
+    esIngreso ? h("p", { style: { fontSize: 12, color: "var(--sub)" } },
+        "Emitidas no trae una categoría de cierre como Recibidas; se agrupa por Descripción de la línea en su lugar.") : null,
+
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "1fr 1fr" } },
+      h(DonutDetalleCard, { titulo: `Composición de ${etqTitulo.toLowerCase()} por concepto`,
+        subtitulo: "Participación sobre el total y variación vs. periodo anterior", serieDona: donaSerie,
+        totalTxt: fmt(k.tot_mes), subtotalTxt: `${etqSing} total`,
+        tituloTabla: `Detalle de ${etqTitulo.toLowerCase()} por concepto`, tituloCol1: "Concepto", filasTabla }),
+      h(RankingConcentracionCard, { titulo: `Principales ${etqContraparte.toLowerCase()} por ${etqSing.toLowerCase()}`,
+        subtitulo: `Top 10 ${etqContraparte.toLowerCase()} del periodo`, badge: "Top 10",
+        items: datos.por_contraparte.map((c) => ({ nombre: c.nombre, monto: c.monto })),
+        color: colorReal, etqContraparte, etqContraparteSing }))
+  );
+}
+
+function StatCardInline(props) {
+  const c = props.c;
+  return h("div", { className: "stat-card" },
+    h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS[c.icono] || "•"), h("div", { className: "stat-label" }, c.label)),
+    h("div", { className: "stat-value" }, c.valor),
+    h(Badge, { texto: c.deltaTxt, positivo: c.deltaPos }),
+    c.sub ? h("div", { className: "stat-sub" }, c.sub) : null);
+}
+
+const TABS = [
+  { key: "Utilidad Operativa", icono: "chart", titulo: "Utilidad Operativa", subtitulo: "Tablero Carga-Aérea" },
+  { key: "Gastos", icono: "chart", titulo: "Análisis de gastos por aduana", subtitulo: "Comportamiento, composición y principales proveedores de gastos" },
+  { key: "Ingresos", icono: "chart", titulo: "Análisis de Ingresos", subtitulo: "Comportamiento, composición y principales generadores de ingresos" },
+];
+const NAV_EXTERNO = ["Nómina", "Tarjeta de Crédito"];
+
+function App(props) {
+  const d = props.datos;
+  const [tab, setTab] = useState(d.pagina_activa && TABS.some((t) => t.key === d.pagina_activa) ? d.pagina_activa : "Utilidad Operativa");
+  const activa = TABS.find((t) => t.key === tab) || TABS[0];
+  const datosActivos = tab === "Utilidad Operativa" ? d.utilidad_operativa : tab === "Gastos" ? d.gastos : d.ingresos;
+  const mesTxt = (datosActivos && datosActivos.mes_txt) || "—";
+
+  return h("div", {},
+    h("div", { className: "topnav" },
+      TABS.map((t) => h("button", { key: t.key, className: tab === t.key ? "active" : "", onClick: () => setTab(t.key) }, t.titulo.split(" ")[0] === "Análisis" ? t.key : t.key)),
+      h("div", { className: "sep" }),
+      NAV_EXTERNO.map((n) => h("button", { key: n, onClick: () => Streamlit.setComponentValue({ nav_to: n }) }, n + " →"))),
+    h(React.Fragment, {},
+      h("div", { className: "dash-header" },
+        h("div", { className: "dash-header-left" },
+          h("div", { className: "dash-header-icon" }, ICONOS.chart),
+          h("div", {}, h("h1", {}, activa.titulo), h("p", {}, activa.subtitulo))),
+        h("div", { style: { display: "flex", gap: 10 } },
+          h("div", { className: "filtro-pill" }, h("span", {}, ICONOS.calendar), h("span", {}, h("span", { className: "fp-label" }, "Periodo"), h("span", { className: "fp-value" }, mesTxt))),
+          h("div", { className: "filtro-pill" }, h("span", {}, ICONOS.year), h("span", {}, h("span", { className: "fp-label" }, "Año"), h("span", { className: "fp-value" }, "2026"))))),
+    tab === "Utilidad Operativa" ? h(UtilidadOperativaPage, { datos: d.utilidad_operativa, colores: d.colores })
+      : h(FlujoPage, { datos: datosActivos, esIngreso: tab === "Ingresos", colores: d.colores })));
+}
+
+let root = null;
+function medirYReportarAltura() {
+  /* document.documentElement.scrollHeight se infla con el span de medicion
+     de texto que Recharts inserta fuera de pantalla (top:-20000px); el alto
+     real de contenido esta en body.scrollHeight. */
+  Streamlit.setFrameHeight(document.body.scrollHeight + 20);
+}
+function render(args) {
+  if (!args || !args.datos) return;
+  if (!root) {
+    root = ReactDOM.createRoot(document.getElementById("root"));
+    /* Recalcula la altura ante CUALQUIER cambio de layout (cambio de
+       pestana, toggle Top5/Todas, dropdown de aduana, etc.) -- todo eso
+       pasa por estado de React del lado del cliente, sin volver a llamar
+       a render() via postMessage, asi que un solo ResizeObserver sobre la
+       raiz cubre todos esos casos sin tener que listar cada pieza de estado. */
+    new ResizeObserver(() => medirYReportarAltura()).observe(document.getElementById("root"));
+  }
+  root.render(h(App, { datos: args.datos }));
+  setTimeout(medirYReportarAltura, 60);
+  setTimeout(medirYReportarAltura, 400);
+}
+window.addEventListener("resize", medirYReportarAltura);
+
+Streamlit.init();
+</script>
+</body>
+</html>

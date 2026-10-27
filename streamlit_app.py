@@ -825,6 +825,8 @@ root.render(
 
 _treemap_nomina_component = components.declare_component(
     "treemap_click", path=str(BASE / "components" / "treemap_click"))
+_dashboard_component = components.declare_component(
+    "facturacion_dashboard", path=str(BASE / "components" / "facturacion_dashboard"))
 
 def _construir_arbol_nomina(sueldos_f):
     """Arma los 3 niveles del treemap de Nómina (aduana -> empleado ->
@@ -1337,33 +1339,68 @@ components.html(
     height=0,
 )
 
-with st.sidebar:
-    if LOGO_PATH.exists():
-        st.image(str(LOGO_PATH), use_container_width=True)
-    st.markdown("---")
-    st.caption("TABLEROS")
-    pagina = st.radio(
-        "",
-        ["Utilidad Operativa", "Gastos", "Ingresos", "Nómina", "Tarjeta de Crédito"],
-        label_visibility="collapsed",
-        key="nav",
-    )
-    st.markdown("---")
-    st.caption("PERIODO")
-    labels_disp = [p.periodo_label for p in periodos]
-    sel_labels = st.multiselect("", labels_disp, default=labels_disp,
-                                label_visibility="collapsed", key="periodo_sel")
-    if not sel_labels:
-        sel_labels = labels_disp
-    st.caption("ADUANA")
-    aduanas_todas = sorted(df["aduana"].dropna().unique().tolist())
-    aduanas_sel_global = st.multiselect("", aduanas_todas, default=[],
-                                        label_visibility="collapsed", key="aduana_sel_global",
-                                        placeholder="Todas")
-    st.markdown("---")
-    st.caption(f"Facturación · {len(periodos)} mes(es) cargado(s)")
-    if SOLO_PROPIOS:
-        st.caption("Mostrando solo PROPIOS")
+NAV_OPCIONES = ["Utilidad Operativa", "Gastos", "Ingresos", "Nómina", "Tarjeta de Crédito"]
+PAGINAS_REDISENADAS = {"Utilidad Operativa", "Gastos", "Ingresos"}
+if "nav" not in st.session_state:
+    st.session_state["nav"] = "Utilidad Operativa"
+pagina = st.session_state["nav"]
+
+labels_disp = [p.periodo_label for p in periodos]
+aduanas_todas = sorted(df["aduana"].dropna().unique().tolist())
+
+if pagina in PAGINAS_REDISENADAS:
+    # Estas 3 paginas ya no usan el sidebar ni widgets nativos de Streamlit --
+    # el usuario pidio explicitamente eliminar "todo lo de Streamlit" y
+    # reconstruir identico a sus mockups con React/HTML/CSS (ver
+    # [[feedback-respetar-referencias-visuales]]). La navegacion y los
+    # filtros viven DENTRO del componente (ver dashboard_component mas abajo);
+    # Periodo/Aduana no tienen un control global aqui porque hoy solo hay un
+    # periodo cargado y cada pagina ya filtra por aduana a su manera (ver
+    # mockup "Resumen de la aduana").
+    st.markdown("""<style>
+        [data-testid='stSidebar'] { display: none !important; }
+        [data-testid='stToolbar'] { display: none !important; }
+        [data-testid='stHeader'] { display: none !important; }
+        [data-testid='stDecoration'] { display: none !important; }
+        footer { display: none !important; }
+        #MainMenu { display: none !important; }
+        div[data-testid='stAppViewContainer'] { background: #F4F5F7 !important; }
+        div[data-testid='stMain'] { background: #F4F5F7 !important; }
+        div[data-testid='stMainBlockContainer'] {
+            padding: 0 !important; max-width: 100% !important;
+        }
+        iframe[title='app_facturacion.facturacion_dashboard'] {
+            width: 100% !important; min-height: 100vh !important;
+        }
+        </style>""", unsafe_allow_html=True)
+    sel_labels = labels_disp
+    aduanas_sel_global = []
+else:
+    with st.sidebar:
+        if LOGO_PATH.exists():
+            st.image(str(LOGO_PATH), use_container_width=True)
+        st.markdown("---")
+        st.caption("TABLEROS")
+        idx_actual = NAV_OPCIONES.index(pagina) if pagina in NAV_OPCIONES else 0
+        pagina_radio = st.radio("", NAV_OPCIONES, index=idx_actual,
+                                label_visibility="collapsed", key="nav_radio")
+        if pagina_radio != pagina:
+            st.session_state["nav"] = pagina_radio
+            st.rerun()
+        st.markdown("---")
+        st.caption("PERIODO")
+        sel_labels = st.multiselect("", labels_disp, default=labels_disp,
+                                    label_visibility="collapsed", key="periodo_sel")
+        if not sel_labels:
+            sel_labels = labels_disp
+        st.caption("ADUANA")
+        aduanas_sel_global = st.multiselect("", aduanas_todas, default=[],
+                                            label_visibility="collapsed", key="aduana_sel_global",
+                                            placeholder="Todas")
+        st.markdown("---")
+        st.caption(f"Facturación · {len(periodos)} mes(es) cargado(s)")
+        if SOLO_PROPIOS:
+            st.caption("Mostrando solo PROPIOS")
 
 def _filtra_periodo_aduana(data):
     """Aplica el filtro global de Periodo + Aduana del sidebar a cualquier
@@ -2108,10 +2145,148 @@ def pagina_analisis_ingresos():
             filas_cr,
         ], extra_script=tend_script + script_cr)
 
+def _uo_payload():
+    """Datos de 'Utilidad Operativa' para el componente React -- mismos
+    calculos que antes (ver historia de este archivo), solo que en vez de
+    pintar tarjetas HTML, arma un dict para mandar completo al componente."""
+    if utilidad_op_f.empty:
+        return None
+    uo_ad = utilidad_op_f.groupby("aduana")[["emitidas", "HONORARIOS AA", "SUELDOS",
+                                             "ctos_referencia", "recibida", "ingreso",
+                                             "egreso", "utilidad"]].sum()
+    uo_ad["gastos_operativos"] = uo_ad["egreso"] - uo_ad["SUELDOS"] - uo_ad["ctos_referencia"]
+
+    ppto_mensual, ppto_acumulado, mes_ppto = load_presupuesto()
+    tiene_ppto = bool(ppto_mensual)
+    ppto_df = pd.DataFrame()
+    ppto_anual_df = pd.DataFrame()
+    if tiene_ppto:
+        ppto_df = pd.DataFrame({c: pd.Series(v) for c, v in ppto_mensual.items()}).fillna(0.0)
+        ppto_df["utilidad"] = ppto_df["ingresos"] - ppto_df["costos"] - ppto_df["sueldos"] - ppto_df["gastos"]
+        ppto_acum_df = pd.DataFrame({c: pd.Series(v) for c, v in ppto_acumulado.items()}).fillna(0.0)
+        ppto_acum_df["utilidad"] = (ppto_acum_df["ingresos"] - ppto_acum_df["costos"]
+                                    - ppto_acum_df["sueldos"] - ppto_acum_df["gastos"])
+        ppto_anual_df = ppto_acum_df / (mes_ppto or 1) * 12
+
+    por_aduana = [
+        {"aduana": str(a), "ingreso": float(r["ingreso"]), "costos_referencia": float(r["ctos_referencia"]),
+         "gastos_operativos": float(r["gastos_operativos"]), "sueldos": float(r["SUELDOS"]),
+         "utilidad": float(r["utilidad"])}
+        for a, r in uo_ad.iterrows()
+    ]
+    ppto_por_aduana = []
+    if tiene_ppto:
+        for a, r in ppto_df.iterrows():
+            ppto_por_aduana.append({"aduana": str(a), "ingresos": float(r["ingresos"]), "costos": float(r["costos"]),
+                                    "gastos": float(r["gastos"]), "sueldos": float(r["sueldos"]),
+                                    "utilidad": float(r["utilidad"])})
+
+    def _t(campo):
+        return float(uo_ad[campo].sum())
+    def _p(campo):
+        return float(ppto_df[campo].sum()) if tiene_ppto else None
+    def _pa(campo):
+        return float(ppto_anual_df[campo].sum()) if tiene_ppto else None
+
+    estado_resultados = {
+        "ingresos": {"real": _t("ingreso"), "ppto": _p("ingresos"), "ppto_anual": _pa("ingresos")},
+        "costos_referencia": {"real": _t("ctos_referencia"), "ppto": _p("costos"), "ppto_anual": _pa("costos")},
+        "sueldos": {"real": _t("SUELDOS"), "ppto": _p("sueldos"), "ppto_anual": _pa("sueldos")},
+        "gastos_operativos": {"real": _t("gastos_operativos"), "ppto": _p("gastos"), "ppto_anual": _pa("gastos")},
+        "utilidad": {"real": _t("utilidad"), "ppto": _p("utilidad"), "ppto_anual": _pa("utilidad")},
+    }
+    mes_txt = MES_COL_MAYUS.get(mes_ppto, "").title() if mes_ppto else (sel_labels[-1] if sel_labels else "—")
+    return {"tiene_ppto": tiene_ppto, "mes_txt": mes_txt, "por_aduana": por_aduana,
+           "ppto_por_aduana": ppto_por_aduana, "estado_resultados": estado_resultados}
+
+def _flujo_payload(es_ingreso):
+    """Datos de 'Gastos'/'Ingresos' para el componente React -- misma logica
+    que pagina_analisis_flujo()/_composicion_y_ranking_filas() de antes, pero
+    TODAS las aduanas (no solo la seleccionada) para que el dropdown de
+    'Resumen de la aduana' funcione del lado del cliente sin volver a
+    Python."""
+    base_df = EM if es_ingreso else REC
+    if base_df.empty:
+        return None
+    ppto_key = "ingresos" if es_ingreso else "gastos"
+    ppto_mensual, ppto_acumulado, mes_ppto = load_presupuesto()
+    tiene_ppto = bool(ppto_mensual)
+    tot_mes = float(base_df["importe"].sum())
+    ppto_mes_tot = float(sum(ppto_mensual.get(ppto_key, {}).values())) if tiene_ppto else None
+    ppto_acum_tot = float(sum(ppto_acumulado.get(ppto_key, {}).values())) if tiene_ppto else None
+    n_contrapartes = int(base_df.loc[base_df["importe"] != 0, "contraparte"].nunique())
+    mes_txt = MES_COL_MAYUS.get(mes_ppto, "").title() if mes_ppto else (sel_labels[-1] if sel_labels else "—")
+
+    campo_concepto = "descripcion" if es_ingreso else "concepto_cierre"
+    conc = base_df.copy()
+    conc[campo_concepto] = conc[campo_concepto].fillna("Sin categorizar")
+    por_concepto_full = conc.groupby(campo_concepto)["importe"].sum()
+    por_concepto_full = por_concepto_full[por_concepto_full > 0].sort_values(ascending=False)
+    por_concepto_dona = por_concepto_full.head(6)
+    if len(por_concepto_full) > 6:
+        por_concepto_dona = pd.concat([por_concepto_dona, pd.Series({"Otros": por_concepto_full.iloc[6:].sum()})])
+
+    por_contraparte_full = base_df.groupby("contraparte")["importe"].sum()
+    por_contraparte_full = por_contraparte_full[por_contraparte_full > 0].sort_values(ascending=False)
+    top10 = por_contraparte_full.head(10)
+    if len(por_contraparte_full) > 10:
+        top10 = pd.concat([top10, pd.Series({"Otros": por_contraparte_full.iloc[10:].sum()})])
+
+    por_aduana = []
+    for aduana in sorted(base_df["aduana"].dropna().unique().tolist()):
+        base_aduana = base_df[base_df["aduana"] == aduana]
+        tot_aduana = float(base_aduana["importe"].sum())
+        entry = {"aduana": str(aduana), "total": tot_aduana, "n_operaciones": int(len(base_aduana))}
+        if es_ingreso:
+            por_desc = base_aduana.groupby("descripcion")["importe"].sum().sort_values(ascending=False)
+            top3 = por_desc.head(3)
+            otros_val = float(por_desc.iloc[3:].sum()) if len(por_desc) > 3 else 0.0
+            entry["conceptos"] = [{"nombre": str(c), "pct": float(v / tot_aduana) if tot_aduana else 0.0}
+                                  for c, v in top3.items()]
+            if otros_val:
+                entry["conceptos"].append({"nombre": "Otros conceptos",
+                                           "pct": float(otros_val / tot_aduana) if tot_aduana else 0.0})
+        else:
+            cr_aduana = (float(costos_ref_f.loc[costos_ref_f["aduana"] == aduana, "monto"].sum())
+                        if not costos_ref_f.empty else 0.0)
+            entry["costos_referencia"] = cr_aduana
+            entry["costos_referencia_pct"] = float(cr_aduana / tot_aduana) if tot_aduana else 0.0
+        por_aduana.append(entry)
+
+    cumplimiento = tot_mes / ppto_mes_tot if ppto_mes_tot else None
+    return {
+        "tiene_ppto": tiene_ppto, "mes_txt": mes_txt,
+        "kpis": {"tot_mes": tot_mes, "ppto_mes_tot": ppto_mes_tot, "ppto_acum_tot": ppto_acum_tot,
+                "n_contrapartes": n_contrapartes, "cumplimiento": cumplimiento,
+                "margen": float(MARGEN), "margen_pct": (float(MARGEN_PCT) if MARGEN_PCT is not None else None)},
+        "por_aduana": por_aduana,
+        "por_concepto": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_dona.items()],
+        "por_concepto_full": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_full.items()],
+        "por_contraparte": [{"nombre": str(c), "monto": float(v)} for c, v in top10.items()],
+        "cobertura_concepto": (float(cobertura_concepto) if not es_ingreso else None),
+    }
+
 # ══════════════════════════════════════════════════════════════════════════════
 # PANORAMA
 # ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Utilidad Operativa":
+if pagina in PAGINAS_REDISENADAS:
+    _dash_payload = {
+        "pagina_activa": pagina,
+        "nav_opciones": NAV_OPCIONES,
+        "utilidad_operativa": _uo_payload(),
+        "gastos": _flujo_payload(es_ingreso=False),
+        "ingresos": _flujo_payload(es_ingreso=True),
+        "colores": {"azul": JOCS_AZUL, "verde": JOCS_VERDE, "neg": C_NEG, "margen": C_MARGEN, "ppto": "#9DBFE8"},
+    }
+    _dash_resultado = _dashboard_component(datos=_dash_payload, key="fac_dashboard", default=None)
+    if _dash_resultado and _dash_resultado.get("nav_to"):
+        st.session_state["nav"] = _dash_resultado["nav_to"]
+        st.rerun()
+
+if False:  # CODIGO MUERTO, pendiente de borrar: Utilidad Operativa ahora se
+          # resuelve arriba, en "if pagina in PAGINAS_REDISENADAS:" (componente
+          # React unico). Se deja sin quitar por ahora para no perder las formulas
+          # si hace falta revisarlas; no se ejecuta nunca.
     st.title("Utilidad Operativa")
     st.caption(f"{', '.join(sel_labels)} · Importes en MXN" + (" · Solo PROPIOS" if SOLO_PROPIOS else ""))
 
@@ -2275,15 +2450,9 @@ if pagina == "Utilidad Operativa":
               </div>"""
             render_pagina_html([[(1, er_body, 330)]])
 
-# ══════════════════════════════════════════════════════════════════════════════
-# GASTOS POR CONCEPTO
-# ══════════════════════════════════════════════════════════════════════════════
-if pagina == "Gastos":
-    pagina_analisis_gastos()
-
-if pagina == "Ingresos":
-    pagina_analisis_ingresos()
-
+# Gastos/Ingresos ya se resuelven arriba, dentro de "if pagina in
+# PAGINAS_REDISENADAS:" (componente React unico) -- pagina_analisis_gastos()/
+# pagina_analisis_ingresos() quedan sin usar, pendientes de limpieza.
 
 # ══════════════════════════════════════════════════════════════════════════════
 # NÓMINA
