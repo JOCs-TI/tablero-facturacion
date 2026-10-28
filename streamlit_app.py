@@ -138,9 +138,13 @@ def load_emitidas_recibidas():
         d_sep = _leer_hoja_factura(path_sep, hoja, tipo)
         d_sep = d_sep[d_sep["aduana"].isin(IMILE_ADUANAS)]
         d = pd.concat([d_ago, d_sep], ignore_index=True)
-        # A pedido del usuario (2026-10-28): solo PROPIOS, se excluyen
-        # TERCEROS (y cualquier otro tipo -- ACTIVO FIJO, sin tipo, etc.).
-        resultado[tipo] = d[~d["cancelada"] & (d["tipo_cc"] == "PROPIOS")].reset_index(drop=True)
+        d = d[~d["cancelada"]]
+        # A pedido del usuario (2026-10-28): "solo PROPIOS" aplica nada mas
+        # en Emitidas -- Recibidas se queda con todos los tipos (PROPIOS +
+        # TERCEROS + ACTIVO FIJO).
+        if tipo == "EMITIDA":
+            d = d[d["tipo_cc"] == "PROPIOS"]
+        resultado[tipo] = d.reset_index(drop=True)
     return resultado["EMITIDA"], resultado["RECIBIDA"]
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -414,7 +418,7 @@ components.html(
     height=0,
 )
 
-NAV_OPCIONES = ["Utilidad Operativa", "Gastos", "Ingresos", "Nómina", "Tarjeta de Crédito"]
+NAV_OPCIONES = ["Utilidad Operativa", "Ingresos", "Gastos", "Nómina", "Tarjeta de Crédito"]
 if "nav" not in st.session_state:
     st.session_state["nav"] = "Utilidad Operativa"
 pagina = st.session_state["nav"]
