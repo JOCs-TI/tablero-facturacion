@@ -201,6 +201,15 @@ def load_honorarios_aa():
     out["monto"] = pd.to_numeric(coalesce_col(df, "HONORARIOS DE AGENTE ADUANAL"), errors="coerce").fillna(0.0)
     return out[out["monto"] != 0].reset_index(drop=True)
 
+# PRESUPUESTOS 2026 nombra varias aduanas distinto a como las llama
+# Emitidas/Recibidas (mismo alias que ya se usaba antes del reset para esta
+# misma reconciliación) -- sin esto, Rentabilidad por Aduana no encuentra
+# con qué cruzar la marca de presupuesto para esas aduanas.
+ALIAS_ADUANA_PPTO = {
+    "AMAZON 1 (JUSTO)": "AMAZON 1", "AMAZON 2 (CARGA)": "AMAZON 2",
+    "LAZARO CARDENAS": "LAZARO", "TOLUCA BSO": "TOLUCA", "IMILE": "IMILE AIFA",
+}
+
 def _leer_bloques_presupuesto_anual(ws, meses_idx):
     """PRESUPUESTOS 2026 trae 8 bloques (4 conceptos x mensual/acumulado, una
     columna por mes ENERO..DICIEMBRE) en vez de un archivo por mes como
@@ -211,8 +220,9 @@ def _leer_bloques_presupuesto_anual(ws, meses_idx):
     'meses_idx' es una lista (se piden varios meses de una pasada, ej. el
     mes actual Y diciembre -- diciembre del bloque acumulado da el total
     real del presupuesto anual completo, sin necesidad de proyectarlo).
-    Regresa {mes_idx: (mensual, acumulado)}, cada uno {concepto: total del
-    mes, sumado entre todas las aduanas}."""
+    Regresa {mes_idx: (mensual, acumulado)}, cada uno {concepto: {aduana:
+    valor}} -- por aduana, no un total plano, para poder cruzarlo con el
+    real en la gráfica de Rentabilidad por Aduana."""
     rows = list(ws.iter_rows(min_row=1, values_only=True))
     resultado = {m: ({}, {}) for m in meses_idx}
     vistos = {}
@@ -238,7 +248,7 @@ def _leer_bloques_presupuesto_anual(ws, meses_idx):
             cols_mes = {m: next((j for j, v in enumerate(r)
                                  if isinstance(v, str) and v.strip().upper() == nombre), None)
                        for m, nombre in nombres_mes.items()}
-            totales = {m: 0.0 for m in meses_idx}
+            datos = {m: {} for m in meses_idx}
             i += 1
             while i < len(rows):
                 r2 = rows[i]
@@ -248,22 +258,24 @@ def _leer_bloques_presupuesto_anual(ws, meses_idx):
                 if a.startswith("TOTAL"):
                     i += 1
                     break
+                aduana = ALIAS_ADUANA_PPTO.get(a, a)
                 for m, col_mes in cols_mes.items():
                     val = r2[col_mes] if col_mes is not None and col_mes < len(r2) else None
                     if isinstance(val, (int, float)):
-                        totales[m] += val
+                        datos[m][aduana] = datos[m].get(aduana, 0.0) + val
                 i += 1
             for m in meses_idx:
-                (resultado[m][1] if es_acum else resultado[m][0])[concepto] = totales[m]
+                (resultado[m][1] if es_acum else resultado[m][0])[concepto] = datos[m]
             continue
         i += 1
     return resultado
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_presupuesto():
-    """Regresa (mensual, acumulado, ppto_anual) del mes actual -- 'ppto_anual'
-    es el acumulado a DICIEMBRE (el total real del año completo según el
-    presupuesto, ya no una proyección como antes del reset)."""
+    """Regresa (mensual, acumulado, ppto_anual) del mes actual -- cada uno
+    {concepto: {aduana: valor}}. 'ppto_anual' es el acumulado a DICIEMBRE
+    (el total real del año completo según el presupuesto, ya no una
+    proyección como antes del reset)."""
     import openpyxl
     contenido = _descargar_sheet_drive(DRIVE_SHEET_IDS["presupuestos_2026"])
     wb = openpyxl.load_workbook(BytesIO(contenido), data_only=True)
@@ -271,6 +283,10 @@ def load_presupuesto():
     mensual, acumulado = resultado[MES_ACTUAL]
     _, ppto_anual = resultado[12]
     return mensual, acumulado, ppto_anual
+
+def _ppto_total(d, concepto):
+    """Suma el total de un concepto del presupuesto entre todas las aduanas."""
+    return float(sum(d.get(concepto, {}).values()))
 
 import re
 UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
@@ -331,8 +347,8 @@ def _flujo_payload(es_ingreso):
     ppto_key = "ingresos" if es_ingreso else "gastos"
     tiene_ppto = bool(ppto_mensual)
     tot_mes = float(base_df["importe"].sum())
-    ppto_mes_tot = float(ppto_mensual.get(ppto_key, 0.0)) if tiene_ppto else None
-    ppto_acum_tot = float(ppto_acumulado.get(ppto_key, 0.0)) if tiene_ppto else None
+    ppto_mes_tot = _ppto_total(ppto_mensual, ppto_key) if tiene_ppto else None
+    ppto_acum_tot = _ppto_total(ppto_acumulado, ppto_key) if tiene_ppto else None
     n_contrapartes = int(base_df.loc[base_df["importe"] != 0, "contraparte"].nunique())
 
     campo_concepto = "descripcion" if es_ingreso else "concepto_cierre"
@@ -438,15 +454,22 @@ def _uo_payload():
         })
 
     tiene_ppto = bool(ppto_mensual)
-    def _ppto_utilidad(d):
-        return (d.get("ingresos", 0.0) - d.get("costos", 0.0) - d.get("sueldos", 0.0) - d.get("gastos", 0.0))
+    def _ppto_utilidad_total(d):
+        return (_ppto_total(d, "ingresos") - _ppto_total(d, "costos")
+               - _ppto_total(d, "sueldos") - _ppto_total(d, "gastos"))
     ppto_por_aduana = []
     if tiene_ppto:
-        ppto_por_aduana = [{
-            "aduana": "TOTAL", "ingresos": ppto_mensual.get("ingresos", 0.0),
-            "costos": ppto_mensual.get("costos", 0.0), "gastos": ppto_mensual.get("gastos", 0.0),
-            "sueldos": ppto_mensual.get("sueldos", 0.0), "utilidad": _ppto_utilidad(ppto_mensual),
-        }]
+        aduanas_ppto = set()
+        for concepto in ("ingresos", "costos", "sueldos", "gastos"):
+            aduanas_ppto |= set(ppto_mensual.get(concepto, {}).keys())
+        for aduana in sorted(aduanas_ppto):
+            ing = float(ppto_mensual.get("ingresos", {}).get(aduana, 0.0))
+            cos = float(ppto_mensual.get("costos", {}).get(aduana, 0.0))
+            sue = float(ppto_mensual.get("sueldos", {}).get(aduana, 0.0))
+            gas = float(ppto_mensual.get("gastos", {}).get(aduana, 0.0))
+            ppto_por_aduana.append({"aduana": aduana, "ingresos": ing, "costos": cos,
+                                    "sueldos": sue, "gastos": gas,
+                                    "utilidad": ing - cos - sue - gas})
 
     ingreso_total = float(TOT_EM) + float(honor_ad.sum())
     sueldos_total = float(sueldos_ad.sum())
@@ -456,8 +479,8 @@ def _uo_payload():
 
     def _concepto(real, clave_ppto):
         return {"real": real,
-               "ppto": float(ppto_mensual.get(clave_ppto)) if tiene_ppto and clave_ppto else None,
-               "ppto_anual": float(ppto_anual.get(clave_ppto)) if tiene_ppto and clave_ppto else None}
+               "ppto": _ppto_total(ppto_mensual, clave_ppto) if tiene_ppto and clave_ppto else None,
+               "ppto_anual": _ppto_total(ppto_anual, clave_ppto) if tiene_ppto and clave_ppto else None}
 
     estado_resultados = {
         "ingresos": _concepto(ingreso_total, "ingresos"),
@@ -465,8 +488,8 @@ def _uo_payload():
         "sueldos": _concepto(sueldos_total, "sueldos"),
         "gastos_operativos": _concepto(gastos_total, "gastos"),
         "utilidad": {"real": utilidad_total,
-                    "ppto": _ppto_utilidad(ppto_mensual) if tiene_ppto else None,
-                    "ppto_anual": _ppto_utilidad(ppto_anual) if tiene_ppto else None},
+                    "ppto": _ppto_utilidad_total(ppto_mensual) if tiene_ppto else None,
+                    "ppto_anual": _ppto_utilidad_total(ppto_anual) if tiene_ppto else None},
     }
     return {"tiene_ppto": tiene_ppto, "mes_txt": MES_TXT, "por_aduana": por_aduana,
            "ppto_por_aduana": ppto_por_aduana, "estado_resultados": estado_resultados}
