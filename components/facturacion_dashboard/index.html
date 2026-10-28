@@ -258,14 +258,13 @@ function LineChartCard(props) {
 }
 
 function DonutDetalleCard(props) {
-  const { titulo, subtitulo, serieDona, totalTxt, subtotalTxt, tituloTabla, tituloCol1, filasTabla } = props;
-  const tot = serieDona.reduce((s, d) => s + d.monto, 0) || 1;
+  const { titulo, subtitulo, serieDona, totalTxt, subtotalTxt, tituloCol1, filasTabla } = props;
   const data = serieDona.map((d, i) => ({ nombre: d.concepto, valor: d.monto, color: colorFor(d.concepto === "Otros" ? -1 : i) }));
   const totTabla = filasTabla.reduce((s, f) => s + f.monto, 0) || 1;
   return h("div", { className: "card" },
     h(CardHeader, { icono: "chart", titulo }),
     h("p", { className: "card-subtitle" }, subtitulo),
-    h("div", { className: "donut-detalle-row", style: { display: "flex", gap: 10, alignItems: "center" } },
+    h("div", { className: "donut-detalle-row", style: { display: "flex", gap: 10, alignItems: "flex-start" } },
       h("div", { style: { flex: "0 0 36%", position: "relative" } },
         h("div", { style: { height: 170 } },
           h(ResponsiveContainer, { width: "100%", height: "100%" },
@@ -273,41 +272,25 @@ function DonutDetalleCard(props) {
               h(Pie, { data, dataKey: "valor", nameKey: "nombre", innerRadius: 44, outerRadius: 75, paddingAngle: 1 },
                 data.map((d, i) => h(Cell, { key: i, fill: d.color, stroke: "#fff", strokeWidth: 2 }))),
               h(Tooltip, { formatter: (v) => fmt(v) })))),
-        h("div", { style: { position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" } },
+        h("div", { style: { position: "absolute", top: "85px", left: "50%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" } },
           h("div", { style: { fontSize: 13, fontWeight: 800, color: "var(--azul)" } }, totalTxt),
           h("div", { style: { fontSize: 9.5, color: "var(--sub)" } }, subtotalTxt))),
-      h("div", { style: { flex: 1, minWidth: 0 } },
-        h("table", { className: "dtable", style: { fontSize: "10.5px", tableLayout: "fixed", width: "100%" } },
-          h("colgroup", {}, h("col", { style: { width: "42%" } }), h("col", { style: { width: "22%" } }),
-                          h("col", { style: { width: "16%" } }), h("col", { style: { width: "20%" } })),
+      h("div", { style: { flex: 1, minWidth: 0, maxHeight: 220, overflowY: "auto", overflowX: "auto" } },
+        h("table", { className: "dtable", style: { minWidth: 420 } },
           h("tbody", {},
-            h("tr", {}, h("th", {}, "Concepto"), h("th", { className: "num" }, "Monto"),
-                       h("th", { className: "num" }, "%"), h("th", { className: "num" }, "Var.")),
-            data.map((d, i) => h("tr", { key: i },
-              h("td", { style: { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 110 } },
-                h("span", { style: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: d.color, marginRight: 5 } }),
-                d.nombre),
-              h("td", { className: "num" }, fmt(d.valor)),
-              h("td", { className: "num" }, (d.valor / tot * 100).toFixed(1) + "%"),
-              h("td", { className: "num", style: { color: "var(--sub)" } }, "—")))
-          )))),
-    h("p", { className: "card-title", style: { fontSize: 13, margin: "14px 0 8px" } }, tituloTabla),
-    h("div", { style: { maxHeight: 220, overflowY: "auto" } },
-      h("table", { className: "dtable" },
-        h("tbody", {},
-          h("tr", {}, h("th", {}, tituloCol1), h("th", { className: "num" }, "Monto actual"),
-                     h("th", { className: "num" }, "% Part."), h("th", { className: "num" }, "Monto anterior"),
-                     h("th", { className: "num" }, "Var. $"), h("th", { className: "num" }, "Var. %")),
-          filasTabla.map((f, i) => h("tr", { key: i },
-            h("td", {}, f.concepto), h("td", { className: "num" }, fmt(f.monto)),
-            h("td", { className: "num" }, pct(f.monto / totTabla).replace("+", "+")),
-            h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
-            h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
-            h("td", { className: "num", style: { color: "var(--sub)" } }, "—"))),
-          h("tr", {}, h("td", {}, "Total"), h("td", { className: "num" }, fmt(totTabla)),
-                     h("td", { className: "num" }, "100%"), h("td", { className: "num" }, "—"),
-                     h("td", { className: "num" }, "—"), h("td", { className: "num" }, "—"))
-        ))));
+            h("tr", {}, h("th", {}, tituloCol1), h("th", { className: "num" }, "Monto actual"),
+                       h("th", { className: "num" }, "% Part."), h("th", { className: "num" }, "Monto anterior"),
+                       h("th", { className: "num" }, "Var. $"), h("th", { className: "num" }, "Var. %")),
+            filasTabla.map((f, i) => h("tr", { key: i },
+              h("td", {}, f.concepto), h("td", { className: "num" }, fmt(f.monto)),
+              h("td", { className: "num" }, pct(f.monto / totTabla)),
+              h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
+              h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
+              h("td", { className: "num", style: { color: "var(--sub)" } }, "—"))),
+            h("tr", {}, h("td", {}, "Total"), h("td", { className: "num" }, fmt(totTabla)),
+                       h("td", { className: "num" }, "100%"), h("td", { className: "num" }, "—"),
+                       h("td", { className: "num" }, "—"), h("td", { className: "num" }, "—"))
+          )))));
 }
 
 function RankingConcentracionCard(props) {
@@ -588,7 +571,7 @@ function FlujoPage(props) {
       h(DonutDetalleCard, { titulo: `Composición de ${etqTitulo.toLowerCase()} por concepto`,
         subtitulo: "Participación sobre el total y variación vs. periodo anterior", serieDona: donaSerie,
         totalTxt: fmt(k.tot_mes), subtotalTxt: `${etqSing} total`,
-        tituloTabla: `Detalle de ${etqTitulo.toLowerCase()} por concepto`, tituloCol1: "Concepto", filasTabla }),
+        tituloCol1: "Concepto", filasTabla }),
       h(RankingConcentracionCard, { titulo: `Principales ${etqContraparte.toLowerCase()} por ${etqSing.toLowerCase()}`,
         subtitulo: `Top 10 ${etqContraparte.toLowerCase()} del periodo`, badge: "Top 10",
         items: datos.por_contraparte.map((c) => ({ nombre: c.nombre, monto: c.monto })),
