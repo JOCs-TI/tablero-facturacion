@@ -110,7 +110,13 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     monto oficial ya convertida a MXN ('monto 1' en recibidas, 'monto' en
     emitidas -- NUNCA se usa 'Importe' como respaldo, el usuario deja líneas
     sin monto a propósito). El concepto de cierre de recibidas en esta
-    fuente trae el encabezado vacío (un espacio ' '), por eso el fallback."""
+    fuente trae el encabezado vacío (un espacio ' '), por eso el fallback.
+    A propósito NUNCA se cae a 'MONTO 2' cuando 'monto 1' viene vacío: las
+    filas de KYA TI/Yatec en Recibidas solo traen monto en esa columna, y
+    el usuario pidió explícitamente no contarlas para agosto (2026-10-28)
+    -- quedan en $0 y se excluyen solas, sin necesidad de un filtro aparte.
+    Si se agrega alguna vez un respaldo a 'MONTO 2' para otro caso, hay que
+    excluir a KYA TI/Yatec a mano."""
     df = pd.read_excel(path, sheet_name=hoja, header=0)
     df.columns = [str(c).strip().lower() for c in df.columns]
     out = pd.DataFrame(index=df.index)
