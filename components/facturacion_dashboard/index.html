@@ -238,11 +238,20 @@ function LineChartCard(props) {
         h(LineChart, { data, margin: { top: 6, right: 10, left: 0, bottom: 0 } },
           h(CartesianGrid, { strokeDasharray: "3 3", vertical: false }),
           h(XAxis, { dataKey: "cat", tick: { fontSize: 11, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
-          h(YAxis, { tickFormatter: fmtEje, tick: { fontSize: 10, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
+          h(YAxis, {
+            // Sin 'domain' explicito, Recharts usa el min/max exacto de los
+            // datos como techo/piso del eje -- con una sola categoria y
+            // ppto fijo en 0%, el punto de Presupuesto cae justo en el
+            // borde del area del grafico y Recharts lo recorta (se ve
+            // "cortado"/invisible). Un margen fijo de aire arriba/abajo lo
+            // resuelve sin depender de que los valores sean negativos o no.
+            tickFormatter: fmtEje, tick: { fontSize: 10, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" },
+            domain: [(dataMin) => Math.min(dataMin, 0) - 0.02, (dataMax) => Math.max(dataMax, 0) + 0.02],
+          }),
           h(Tooltip, { formatter: (v) => fmtEje(v) }),
           h(Legend, { wrapperStyle: { fontSize: 12 } }),
           h(Line, { type: "monotone", dataKey: "real", name: nombreReal, stroke: colorReal, strokeWidth: 3, dot: { r: 4 } }),
-          h(Line, { type: "monotone", dataKey: "ppto", name: nombrePpto, stroke: colorPpto, strokeWidth: 2, strokeDasharray: "5 3", dot: { r: 4 } })
+          h(Line, { type: "monotone", dataKey: "ppto", name: nombrePpto, stroke: colorPpto, strokeWidth: 2, strokeDasharray: "5 3", dot: { r: 4, strokeDasharray: "0" } })
         ))),
     nota ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)", textAlign: "center" } }, nota) : null
   );
