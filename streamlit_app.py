@@ -44,6 +44,7 @@ DRIVE_SHEET_IDS = {
     "emitidas_recibidas_septiembre": "1EmLMmxI_-u2DXsaXD2jZKjNKviTR6ovpIbk6SRG1R88",
     "sueldos": "11MqeqH1_vo7_qi1HWnMBDNMcGCvBe9rczwLJRFF340I",
     "costos_de_referencia": "1KcqmhUnh1-UHGdoF53kuDujoBZtiB94L5620ZIjFq4U",
+    "honorarios_aa": "1mwdtAe4wt5hwDaSa-xnevCVvXJIaBQD4oIe2ypfZe7Q",
     "presupuestos_2026": "1eFuRgbRap7OL4uh6BY3cHLv6O1rHc3915pC6j13rfO4",
     "amex_alejandro": "1JNeNj6JERd13i5TZCCH1_SHY5vXv7dmUg0lUyRzS3ow",
     "amex_josefa": "1MQyjGwAHgRSMBJdZ_HFGskhplB2tk1JdDo2oY-6tzZ0",
@@ -184,20 +185,39 @@ def load_costos_referencia():
     out["monto"] = pd.to_numeric(coalesce_col(df, "Total Conceptos AA"), errors="coerce").fillna(0.0)
     return out[out["monto"] != 0].reset_index(drop=True)
 
-def _leer_bloques_presupuesto_anual(ws, mes_idx):
+@st.cache_data(ttl=300, show_spinner=False)
+def load_honorarios_aa():
+    """Pestaña 'Detalle' -- ya trae el nombre de la aduana directo (columna
+    'NOMBRE ADUANA', no un código). Se filtra a MES_ACTUAL (columna 'Mes'
+    viene mezclada int/str en el archivo, por eso el cast a str antes de
+    comparar)."""
+    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["honorarios_aa"]))
+    df = pd.read_excel(path, sheet_name="Detalle", header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df[df["Mes"].astype(str) == str(MES_ACTUAL)].copy()
+    out = pd.DataFrame(index=df.index)
+    out["aduana"] = coalesce_col(df, "NOMBRE ADUANA").map(norm_txt).map(
+        lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+    out["monto"] = pd.to_numeric(coalesce_col(df, "HONORARIOS DE AGENTE ADUANAL"), errors="coerce").fillna(0.0)
+    return out[out["monto"] != 0].reset_index(drop=True)
+
+def _leer_bloques_presupuesto_anual(ws, meses_idx):
     """PRESUPUESTOS 2026 trae 8 bloques (4 conceptos x mensual/acumulado, una
     columna por mes ENERO..DICIEMBRE) en vez de un archivo por mes como
     antes. El 2o bloque de cada concepto es el acumulado, pero el archivo NO
     siempre lo marca con la palabra 'ACUMULADO' en la columna A (INGRESOS y
     GASTOS OP sí, CTO REF y SUELDOS repiten su propio nombre) -- se detecta
-    por posición (2a aparición de cada concepto), no por el texto. Regresa
-    (mensual, acumulado): cada uno {concepto: total del mes pedido, sumado
-    entre todas las aduanas}."""
+    por posición (2a aparición de cada concepto), no por el texto.
+    'meses_idx' es una lista (se piden varios meses de una pasada, ej. el
+    mes actual Y diciembre -- diciembre del bloque acumulado da el total
+    real del presupuesto anual completo, sin necesidad de proyectarlo).
+    Regresa {mes_idx: (mensual, acumulado)}, cada uno {concepto: total del
+    mes, sumado entre todas las aduanas}."""
     rows = list(ws.iter_rows(min_row=1, values_only=True))
-    mensual, acumulado = {}, {}
+    resultado = {m: ({}, {}) for m in meses_idx}
     vistos = {}
     ultimo_concepto = None
-    mes_nombre = MES_COL_MAYUS[mes_idx]
+    nombres_mes = {m: MES_COL_MAYUS[m] for m in meses_idx}
     i = 0
     while i < len(rows):
         r = rows[i]
@@ -215,9 +235,10 @@ def _leer_bloques_presupuesto_anual(ws, mes_idx):
             veces = vistos.get(concepto, 0)
             es_acum = veces >= 1
             vistos[concepto] = veces + 1
-            col_mes = next((j for j, v in enumerate(r)
-                           if isinstance(v, str) and v.strip().upper() == mes_nombre), None)
-            total = 0.0
+            cols_mes = {m: next((j for j, v in enumerate(r)
+                                 if isinstance(v, str) and v.strip().upper() == nombre), None)
+                       for m, nombre in nombres_mes.items()}
+            totales = {m: 0.0 for m in meses_idx}
             i += 1
             while i < len(rows):
                 r2 = rows[i]
@@ -227,21 +248,29 @@ def _leer_bloques_presupuesto_anual(ws, mes_idx):
                 if a.startswith("TOTAL"):
                     i += 1
                     break
-                val = r2[col_mes] if col_mes is not None and col_mes < len(r2) else None
-                if isinstance(val, (int, float)):
-                    total += val
+                for m, col_mes in cols_mes.items():
+                    val = r2[col_mes] if col_mes is not None and col_mes < len(r2) else None
+                    if isinstance(val, (int, float)):
+                        totales[m] += val
                 i += 1
-            (acumulado if es_acum else mensual)[concepto] = total
+            for m in meses_idx:
+                (resultado[m][1] if es_acum else resultado[m][0])[concepto] = totales[m]
             continue
         i += 1
-    return mensual, acumulado
+    return resultado
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_presupuesto():
+    """Regresa (mensual, acumulado, ppto_anual) del mes actual -- 'ppto_anual'
+    es el acumulado a DICIEMBRE (el total real del año completo según el
+    presupuesto, ya no una proyección como antes del reset)."""
     import openpyxl
     contenido = _descargar_sheet_drive(DRIVE_SHEET_IDS["presupuestos_2026"])
     wb = openpyxl.load_workbook(BytesIO(contenido), data_only=True)
-    return _leer_bloques_presupuesto_anual(wb[wb.sheetnames[0]], MES_ACTUAL)
+    resultado = _leer_bloques_presupuesto_anual(wb[wb.sheetnames[0]], [MES_ACTUAL, 12])
+    mensual, acumulado = resultado[MES_ACTUAL]
+    _, ppto_anual = resultado[12]
+    return mensual, acumulado, ppto_anual
 
 import re
 UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
@@ -271,7 +300,8 @@ try:
     EM, REC = load_emitidas_recibidas()
     sueldos_df = load_sueldos()
     costos_ref_df = load_costos_referencia()
-    ppto_mensual, ppto_acumulado = load_presupuesto()
+    honorarios_aa_df = load_honorarios_aa()
+    ppto_mensual, ppto_acumulado, ppto_anual = load_presupuesto()
     amex_alejandro_df = load_amex("ALEJANDRO")
     amex_josefa_df = load_amex("JOSEFA")
     amex_angelica_df = load_amex("ANGELICA")
@@ -380,6 +410,67 @@ def _construir_arbol_nomina(sueldos_f):
                       "empleados": empleados})
     return arbol
 
+def _uo_payload():
+    """Utilidad Operativa por aduana -- regla confirmada con el usuario
+    (2026-10-28): Ingreso = Emitidas + Honorarios AA; Utilidad = Ingreso -
+    Sueldos - Gastos (Recibidas) - Costos de Referencia. Imile Laredo sale
+    incompleta aqui (no tiene la hoja de P&L aparte que compensa que no
+    factura por el SAT -- pendiente de conectar) -- se deja tal cual, no se
+    inventa un ajuste."""
+    aduanas = set(EM["aduana"]) | set(REC["aduana"]) | set(sueldos_df["aduana"]) \
+            | set(costos_ref_df["aduana"]) | set(honorarios_aa_df["aduana"])
+    em_ad = EM.groupby("aduana")["importe"].sum()
+    rec_ad = REC.groupby("aduana")["importe"].sum()
+    sueldos_ad = sueldos_df.groupby("aduana")["total"].sum()
+    costos_ad = costos_ref_df.groupby("aduana")["monto"].sum()
+    honor_ad = honorarios_aa_df.groupby("aduana")["monto"].sum()
+
+    por_aduana = []
+    for aduana in sorted(aduanas):
+        ingreso = float(em_ad.get(aduana, 0.0)) + float(honor_ad.get(aduana, 0.0))
+        sueldos_v = float(sueldos_ad.get(aduana, 0.0))
+        gastos_v = float(rec_ad.get(aduana, 0.0))
+        costos_v = float(costos_ad.get(aduana, 0.0))
+        por_aduana.append({
+            "aduana": str(aduana), "ingreso": ingreso, "costos_referencia": costos_v,
+            "gastos_operativos": gastos_v, "sueldos": sueldos_v,
+            "utilidad": ingreso - sueldos_v - gastos_v - costos_v,
+        })
+
+    tiene_ppto = bool(ppto_mensual)
+    def _ppto_utilidad(d):
+        return (d.get("ingresos", 0.0) - d.get("costos", 0.0) - d.get("sueldos", 0.0) - d.get("gastos", 0.0))
+    ppto_por_aduana = []
+    if tiene_ppto:
+        ppto_por_aduana = [{
+            "aduana": "TOTAL", "ingresos": ppto_mensual.get("ingresos", 0.0),
+            "costos": ppto_mensual.get("costos", 0.0), "gastos": ppto_mensual.get("gastos", 0.0),
+            "sueldos": ppto_mensual.get("sueldos", 0.0), "utilidad": _ppto_utilidad(ppto_mensual),
+        }]
+
+    ingreso_total = float(TOT_EM) + float(honor_ad.sum())
+    sueldos_total = float(sueldos_ad.sum())
+    gastos_total = float(TOT_REC)
+    costos_total = float(costos_ad.sum())
+    utilidad_total = ingreso_total - sueldos_total - gastos_total - costos_total
+
+    def _concepto(real, clave_ppto):
+        return {"real": real,
+               "ppto": float(ppto_mensual.get(clave_ppto)) if tiene_ppto and clave_ppto else None,
+               "ppto_anual": float(ppto_anual.get(clave_ppto)) if tiene_ppto and clave_ppto else None}
+
+    estado_resultados = {
+        "ingresos": _concepto(ingreso_total, "ingresos"),
+        "costos_referencia": _concepto(costos_total, "costos"),
+        "sueldos": _concepto(sueldos_total, "sueldos"),
+        "gastos_operativos": _concepto(gastos_total, "gastos"),
+        "utilidad": {"real": utilidad_total,
+                    "ppto": _ppto_utilidad(ppto_mensual) if tiene_ppto else None,
+                    "ppto_anual": _ppto_utilidad(ppto_anual) if tiene_ppto else None},
+    }
+    return {"tiene_ppto": tiene_ppto, "mes_txt": MES_TXT, "por_aduana": por_aduana,
+           "ppto_por_aduana": ppto_por_aduana, "estado_resultados": estado_resultados}
+
 def _nomina_payload():
     if sueldos_df.empty:
         return None
@@ -451,7 +542,7 @@ st.markdown("""<style>
 _dash_payload = {
     "pagina_activa": pagina,
     "nav_opciones": NAV_OPCIONES,
-    "utilidad_operativa": None,
+    "utilidad_operativa": _uo_payload(),
     "gastos": _flujo_payload(es_ingreso=False),
     "ingresos": _flujo_payload(es_ingreso=True),
     "nomina": _nomina_payload(),

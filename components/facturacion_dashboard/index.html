@@ -404,11 +404,11 @@ function EstadoResultadosCard(props) {
   return h("div", { className: "card" },
     h(CardHeader, { icono: "doc", titulo: "Estado de Resultados" }),
     h("p", { className: "card-subtitle" },
-      `Mes: ${mesTxt}. Vista acumulada y comparativo contra 2025 pendientes de histórico (ver Resumen Ejecutivo). "Ppto. anual" es una proyección simple (acumulado a la fecha ÷ meses transcurridos × 12), no una meta anual real.`),
+      `Mes: ${mesTxt}. Vista acumulada y comparativo contra 2025 pendientes de histórico (ver Resumen Ejecutivo). "Ppto. anual" es la meta real de todo el año (acumulado a diciembre del presupuesto), no una proyección.`),
     h("table", { className: "dtable" },
       h("tbody", {},
         h("tr", {}, h("th", {}, "Concepto"), h("th", { className: "num" }, "Real"), h("th", { className: "num" }, "Presupuesto"),
-                   h("th", { className: "num" }, "Var. %"), h("th", { className: "num" }, "Ppto. anual (proyectado)")),
+                   h("th", { className: "num" }, "Var. %"), h("th", { className: "num" }, "Ppto. anual")),
         fila("Ingresos", er.ingresos, false), fila("Costos y gastos", cg, false),
         fila("Costos de Referencia", er.costos_referencia, true), fila("Sueldos", er.sueldos, true),
         fila("Gastos Operativos", er.gastos_operativos, true), fila("Utilidad Operativa", er.utilidad, false))));
