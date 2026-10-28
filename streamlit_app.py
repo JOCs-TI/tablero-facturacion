@@ -134,10 +134,18 @@ def load_emitidas_recibidas():
     resultado = {}
     for hoja, tipo in [("EMITIDAS", "EMITIDA"), ("RECIBIDAS", "RECIBIDA")]:
         d_ago = _leer_hoja_factura(path_ago, hoja, tipo)
-        d_ago = d_ago[~d_ago["aduana"].isin(IMILE_ADUANAS)]
-        d_sep = _leer_hoja_factura(path_sep, hoja, tipo)
-        d_sep = d_sep[d_sep["aduana"].isin(IMILE_ADUANAS)]
-        d = pd.concat([d_ago, d_sep], ignore_index=True)
+        if tipo == "EMITIDA":
+            # Imile AIFA/Imile Laredo en EMITIDAS siempre vienen un mes
+            # atrasadas -- se excluyen de Agosto y se toman de Septiembre.
+            d_ago = d_ago[~d_ago["aduana"].isin(IMILE_ADUANAS)]
+            d_sep = _leer_hoja_factura(path_sep, hoja, tipo)
+            d_sep = d_sep[d_sep["aduana"].isin(IMILE_ADUANAS)]
+            d = pd.concat([d_ago, d_sep], ignore_index=True)
+        else:
+            # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
+            # en el archivo de Agosto -- a diferencia de Emitidas, aqui NO
+            # se sustituyen desde Septiembre (confirmado con el usuario).
+            d = d_ago
         d = d[~d["cancelada"]]
         # A pedido del usuario (2026-10-28): "solo PROPIOS" aplica nada mas
         # en Emitidas -- Recibidas se queda con todos los tipos (PROPIOS +
