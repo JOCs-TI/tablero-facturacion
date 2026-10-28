@@ -138,7 +138,9 @@ def load_emitidas_recibidas():
         d_sep = _leer_hoja_factura(path_sep, hoja, tipo)
         d_sep = d_sep[d_sep["aduana"].isin(IMILE_ADUANAS)]
         d = pd.concat([d_ago, d_sep], ignore_index=True)
-        resultado[tipo] = d[~d["cancelada"]].reset_index(drop=True)
+        # A pedido del usuario (2026-10-28): solo PROPIOS, se excluyen
+        # TERCEROS (y cualquier otro tipo -- ACTIVO FIJO, sin tipo, etc.).
+        resultado[tipo] = d[~d["cancelada"] & (d["tipo_cc"] == "PROPIOS")].reset_index(drop=True)
     return resultado["EMITIDA"], resultado["RECIBIDA"]
 
 @st.cache_data(ttl=300, show_spinner=False)
