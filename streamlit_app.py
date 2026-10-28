@@ -111,12 +111,15 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     emitidas -- NUNCA se usa 'Importe' como respaldo, el usuario deja líneas
     sin monto a propósito). El concepto de cierre de recibidas en esta
     fuente trae el encabezado vacío (un espacio ' '), por eso el fallback.
-    A propósito NUNCA se cae a 'MONTO 2' cuando 'monto 1' viene vacío: las
-    filas de KYA TI/Yatec en Recibidas solo traen monto en esa columna, y
-    el usuario pidió explícitamente no contarlas para agosto (2026-10-28)
-    -- quedan en $0 y se excluyen solas, sin necesidad de un filtro aparte.
-    Si se agrega alguna vez un respaldo a 'MONTO 2' para otro caso, hay que
-    excluir a KYA TI/Yatec a mano."""
+    A propósito NUNCA se cae a 'MONTO 2' cuando 'monto 1' viene vacío: en
+    Recibidas, 'MONTO 2' es el monto que le pertenece al MES ANTERIOR, no
+    al mes actual (confirmado con el usuario, 2026-10-28). Verificado
+    contra el archivo real: las 175 filas con algo en 'MONTO 2' (KYA TI,
+    Yatec, IMSS, Infonavit, y varios proveedores de STAFF) TODAS traen
+    'monto 1' vacío -- quedan en $0 y se excluyen solas de agosto, sin
+    necesidad de un filtro aparte. El día que el tablero muestre más de un
+    mes a la vez, 'MONTO 2' es de donde hay que sacar el dato del mes
+    anterior para esas mismas filas, no inventarlo de otro lado."""
     df = pd.read_excel(path, sheet_name=hoja, header=0)
     df.columns = [str(c).strip().lower() for c in df.columns]
     out = pd.DataFrame(index=df.index)
