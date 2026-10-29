@@ -250,8 +250,15 @@ function LineChartCard(props) {
           }),
           h(Tooltip, { formatter: (v) => fmtEje(v) }),
           h(Legend, { wrapperStyle: { fontSize: 12 } }),
-          h(Line, { type: "monotone", dataKey: "real", name: nombreReal, stroke: colorReal, strokeWidth: 3, dot: { r: 4 } }),
-          h(Line, { type: "monotone", dataKey: "ppto", name: nombrePpto, stroke: colorPpto, strokeWidth: 2, strokeDasharray: "5 3", dot: { r: 4, strokeDasharray: "0" } })
+          h(Line, {
+            type: "monotone", dataKey: "real", name: nombreReal, stroke: colorReal, strokeWidth: 3, dot: { r: 5 },
+            label: { position: "top", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: colorReal },
+          }),
+          h(Line, {
+            type: "monotone", dataKey: "ppto", name: nombrePpto, stroke: colorPpto, strokeWidth: 2, strokeDasharray: "5 3",
+            dot: { r: 5, strokeDasharray: "0", fill: colorPpto, stroke: "#fff", strokeWidth: 1.5 },
+            label: { position: "bottom", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: "#6B7280" },
+          })
         ))),
     nota ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)", textAlign: "center" } }, nota) : null
   );
