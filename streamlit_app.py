@@ -194,11 +194,10 @@ def load_emitidas_recibidas():
             d_kya_sep = _leer_kya_yatec_monto2_mes_anterior(path_sep, hoja)
             d = pd.concat([d_ago, d_kya_sep], ignore_index=True)
         d = d[~d["cancelada"]]
-        # A pedido del usuario (2026-10-28): "solo PROPIOS" aplica nada mas
-        # en Emitidas -- Recibidas se queda con todos los tipos (PROPIOS +
-        # TERCEROS + ACTIVO FIJO).
-        if tipo == "EMITIDA":
-            d = d[d["tipo_cc"] == "PROPIOS"]
+        # A pedido del usuario (2026-10-28): "solo PROPIOS" -- aplica tanto en
+        # Emitidas como en Recibidas (corrigio la regla anterior, que dejaba
+        # TERCEROS/ACTIVO FIJO en Recibidas).
+        d = d[d["tipo_cc"] == "PROPIOS"]
         resultado[tipo] = d.reset_index(drop=True)
     return resultado["EMITIDA"], resultado["RECIBIDA"]
 
