@@ -131,6 +131,19 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
     out["concepto_cierre"] = coalesce_col(df, "concepto para cierre", " ").map(norm_txt)
     out["cancelada"] = (out["aduana"] == "CANCELADA") | (out["tipo_cc"] == "CANCELADA")
+    if tipo_factura == "RECIBIDA":
+        # pandas convierte 'N/A' a NaN por default (igual que una celda vacia),
+        # asi que para detectar el texto literal 'N/A' hay que releer sin ese
+        # comportamiento. A pedido del usuario (2026-10-28): en Recibidas, las
+        # filas marcadas 'N/A' (aduana/tipo) no se cuentan -- igual que CANCELADA.
+        path.seek(0)
+        crudo = pd.read_excel(path, sheet_name=hoja, header=0, keep_default_na=False, na_values=[])
+        crudo.columns = [str(c).strip().lower() for c in crudo.columns]
+        es_na = pd.Series(False, index=crudo.index)
+        for col in ("aduana", "tipo"):
+            if col in crudo.columns:
+                es_na = es_na | (crudo[col].astype(str).str.strip().str.upper() == "N/A")
+        out["cancelada"] = out["cancelada"] | es_na.reindex(out.index, fill_value=False)
     out["tipo_factura"] = tipo_factura
     return out[out["importe"] != 0]
 
