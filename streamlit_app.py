@@ -141,6 +141,30 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     out["tipo_factura"] = tipo_factura
     return out[out["importe"] != 0]
 
+KYA_YATEC = {"KYA TI", "YATEC"}
+
+def _leer_kya_yatec_monto2_mes_anterior(path, hoja):
+    """SOLO para KYA TI y Yatec: su 'MONTO 2' en el archivo de un mes (p.ej.
+    Septiembre) le pertenece al mes ANTERIOR de ese archivo (Agosto) --
+    confirmado con el usuario, 2026-10-28. Se usa para completar Agosto con
+    lo que aparezca en Septiembre."""
+    df = pd.read_excel(path, sheet_name=hoja, header=0)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    contraparte = coalesce_col(df, "emisornombre").map(norm_txt)
+    df = df[contraparte.map(lambda s: isinstance(s, str) and s.upper() in KYA_YATEC)]
+    out = pd.DataFrame(index=df.index)
+    out["contraparte"] = coalesce_col(df, "emisornombre").map(norm_txt)
+    out["descripcion"] = coalesce_col(df, "descripcion").map(norm_txt)
+    out["importe"] = pd.to_numeric(coalesce_col(df, "monto 2"), errors="coerce").fillna(0.0)
+    aduana = coalesce_col(df, "aduana").map(norm_txt)
+    out["aduana"] = aduana.map(lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+    tipo_cc = coalesce_col(df, "tipo").map(norm_txt)
+    out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
+    out["concepto_cierre"] = coalesce_col(df, "concepto para cierre", " ").map(norm_txt)
+    out["cancelada"] = (out["aduana"] == "CANCELADA") | (out["tipo_cc"] == "CANCELADA")
+    out["tipo_factura"] = "RECIBIDA"
+    return out[out["importe"] != 0]
+
 @st.cache_data(ttl=300, show_spinner="Cargando facturación...")
 def load_emitidas_recibidas():
     path_ago = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["emitidas_recibidas_agosto"]))
@@ -159,7 +183,10 @@ def load_emitidas_recibidas():
             # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
             # en el archivo de Agosto -- a diferencia de Emitidas, aqui NO
             # se sustituyen desde Septiembre (confirmado con el usuario).
-            d = d_ago
+            # KYA TI y Yatec si se completan con lo que caiga en el 'MONTO 2'
+            # de Septiembre, que les pertenece a Agosto.
+            d_kya_sep = _leer_kya_yatec_monto2_mes_anterior(path_sep, hoja)
+            d = pd.concat([d_ago, d_kya_sep], ignore_index=True)
         d = d[~d["cancelada"]]
         # A pedido del usuario (2026-10-28): "solo PROPIOS" aplica nada mas
         # en Emitidas -- Recibidas se queda con todos los tipos (PROPIOS +
