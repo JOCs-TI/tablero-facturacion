@@ -111,14 +111,12 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     emitidas -- NUNCA se usa 'Importe' como respaldo, el usuario deja líneas
     sin monto a propósito). El concepto de cierre de recibidas en esta
     fuente trae el encabezado vacío (un espacio ' '), por eso el fallback.
-    Cuando 'monto 1' viene vacío, SOLO para KYA TI y Yatec se deja en $0 (su
-    'MONTO 2' le pertenece al MES ANTERIOR, no al actual -- confirmado con el
-    usuario, 2026-10-28). Para cualquier otro proveedor con 'monto 1' vacío,
-    SÍ se usa 'MONTO 2' como importe del mes actual (confirmado con el
-    usuario: "no, solo toma kya y yatec" -- la regla de mes-anterior NO es
-    general, es específica de esos dos proveedores; el resto, p.ej. IMSS,
-    Infonavit, Lira Proyectos, Nomiprax, son gastos reales de este mes que
-    solo vinieron registrados en la columna 'MONTO 2')."""
+    A propósito NUNCA se usa 'MONTO 2' aquí, para ningún proveedor (confirmado
+    con el usuario, 2026-10-28: "de monto 2 lo único que tomes sea de kya y
+    yatec, si hay de otros proveedores, no los agregues"). La única columna
+    de monto es 'monto 1' (o 'monto' en Emitidas). El único lugar donde
+    'MONTO 2' sí se usa es la función _leer_kya_yatec_monto2_mes_anterior,
+    que jala SOLO KYA TI/Yatec desde el archivo del mes siguiente."""
     df = pd.read_excel(path, sheet_name=hoja, header=0)
     df.columns = [str(c).strip().lower() for c in df.columns]
     out = pd.DataFrame(index=df.index)
@@ -126,11 +124,6 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
         df, "receptornombre" if tipo_factura == "EMITIDA" else "emisornombre").map(norm_txt)
     out["descripcion"] = coalesce_col(df, "descripcion").map(norm_txt)
     monto = pd.to_numeric(coalesce_col(df, "monto 1", "monto"), errors="coerce")
-    monto2 = pd.to_numeric(coalesce_col(df, "monto 2"), errors="coerce")
-    ES_MES_ANTERIOR = {"KYA TI", "YATEC"}
-    es_mes_anterior = out["contraparte"].map(lambda s: isinstance(s, str) and s.upper() in ES_MES_ANTERIOR)
-    usar_monto2 = monto.isna() & monto2.notna() & ~es_mes_anterior
-    monto = monto.where(~usar_monto2, monto2)
     out["importe"] = monto.fillna(0.0)
     aduana = coalesce_col(df, "aduana").map(norm_txt)
     out["aduana"] = aduana.map(lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
