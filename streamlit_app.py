@@ -49,6 +49,7 @@ DRIVE_SHEET_IDS = {
     "amex_alejandro": "1JNeNj6JERd13i5TZCCH1_SHY5vXv7dmUg0lUyRzS3ow",
     "amex_josefa": "1MQyjGwAHgRSMBJdZ_HFGskhplB2tk1JdDo2oY-6tzZ0",
     "amex_angelica": "1OewXOKinbq6cOxedrb6NIiaeF3385eCrbmzZFdtBM-0",
+    "corresponsalias": "1cGGgOZ1eX_gsKHcCeHEiPjYju5L1hmjB-HVq2hpa7oo",
 }
 # Imile AIFA/Imile Laredo SIEMPRE vienen un mes atrasadas en esta fuente: lo
 # que aparece en el archivo "Agosto" en realidad es la actividad de julio de
@@ -171,6 +172,28 @@ def _leer_kya_yatec_monto2_mes_anterior(path, hoja):
     out["tipo_factura"] = "RECIBIDA"
     return out[out["importe"] != 0]
 
+CORRESPONSALIAS_ADUANAS = {"VERACRUZ", "MANZANILLO", "LAZARO"}
+
+def _leer_corresponsalias(path):
+    """Facturas de agencias aduanales corresponsales de Veracruz/Manzanillo/
+    Lazaro -- no vienen en el archivo de Emitidas/Recibidas pero si son gasto
+    real de esas 3 aduanas (confirmado con el usuario, 2026-10-28). Se usa
+    'Attribute:Total' (con IVA, Total = SubTotal x 1.16), igual que el resto
+    de montos de Recibidas que ya son el total de la factura."""
+    df = pd.read_excel(path, sheet_name="Agosto", header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df[df["ADUANA"].isin(CORRESPONSALIAS_ADUANAS)]
+    out = pd.DataFrame(index=df.index)
+    out["contraparte"] = df["Emisor.Attribute:Nombre"].map(norm_txt)
+    out["descripcion"] = "Corresponsalía"
+    out["importe"] = pd.to_numeric(df["Attribute:Total"], errors="coerce").fillna(0.0)
+    out["aduana"] = df["ADUANA"].map(lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+    out["tipo_cc"] = "PROPIOS"
+    out["concepto_cierre"] = None
+    out["cancelada"] = False
+    out["tipo_factura"] = "RECIBIDA"
+    return out[out["importe"] != 0]
+
 @st.cache_data(ttl=300, show_spinner="Cargando facturación...")
 def load_emitidas_recibidas():
     path_ago = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["emitidas_recibidas_agosto"]))
@@ -192,7 +215,9 @@ def load_emitidas_recibidas():
             # KYA TI y Yatec si se completan con lo que caiga en el 'MONTO 2'
             # de Septiembre, que les pertenece a Agosto.
             d_kya_sep = _leer_kya_yatec_monto2_mes_anterior(path_sep, hoja)
-            d = pd.concat([d_ago, d_kya_sep], ignore_index=True)
+            path_corr = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["corresponsalias"]))
+            d_corr = _leer_corresponsalias(path_corr)
+            d = pd.concat([d_ago, d_kya_sep, d_corr], ignore_index=True)
         d = d[~d["cancelada"]]
         # A pedido del usuario (2026-10-28): "solo PROPIOS" -- aplica tanto en
         # Emitidas como en Recibidas (corrigio la regla anterior, que dejaba
