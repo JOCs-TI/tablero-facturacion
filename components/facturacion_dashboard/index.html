@@ -33,6 +33,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); font-family: 'Segoe U
 .filtro-pill { display: flex; align-items: center; gap: 7px; background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; }
 .filtro-pill .fp-label { font-size: 10px; color: var(--sub); display: block; }
 .filtro-pill .fp-value { font-size: 12px; color: var(--text); font-weight: 700; display: block; }
+.filtro-pill select.fp-select { font: inherit; font-size: 12px; color: var(--text); font-weight: 700; border: none; background: transparent; outline: none; cursor: pointer; appearance: none; padding: 0; margin: 0; }
 .grid-row { display: grid; gap: 16px; margin-bottom: 16px; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(16,24,40,0.06); height: 100%; }
 .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
@@ -802,10 +803,12 @@ function DonaAnidadaTarjeta(props) {
             dataExt.map((d, i) => h(Cell, { key: i, fill: d.color })))))));
 }
 function TarjetaCreditoPage(props) {
-  const { datos, colores } = props;
+  const { datos, colores, aduanaFiltroActiva } = props;
   if (!datos || !datos.length) return h(EmptyCard, { icono: "money", titulo: "Tarjeta de Crédito", mensaje: "Sin movimientos para el periodo seleccionado." });
   const bandas = [[0.50, colores.neg], [0.30, "#e8a93c"], [0.20, colores.verde]];
   return h(React.Fragment, {},
+    aduanaFiltroActiva ? h("p", { style: { fontSize: 12, color: "var(--sub)", margin: "0 0 14px" } },
+      "Los movimientos de tarjeta de crédito no traen aduana en la fuente, así que esta vista siempre muestra el total completo.") : null,
     datos.map((persona, i) => h("div", { key: i, className: "card", style: { marginBottom: 16 } },
       h(CardHeader, { icono: "money", titulo: persona.nombre }),
       !persona.tiene_datos
@@ -844,11 +847,15 @@ function App(props) {
   const datosActivos = datosPorTab[tab];
   const mesTxt = (datosActivos && datosActivos.mes_txt) || (d.utilidad_operativa && d.utilidad_operativa.mes_txt) || "—";
 
+  const aduanaFiltro = d.aduana_filtro || "TODAS";
+  const aduanasDisp = d.aduanas_disponibles || [];
+  const enAduanaFiltro = aduanaFiltro !== "TODAS";
+
   let paginaEl;
   if (tab === "Utilidad Operativa") paginaEl = h(UtilidadOperativaPage, { datos: d.utilidad_operativa, colores: d.colores });
   else if (tab === "Gastos" || tab === "Ingresos") paginaEl = h(FlujoPage, { datos: datosActivos, esIngreso: tab === "Ingresos", colores: d.colores });
   else if (tab === "Nómina") paginaEl = h(NominaPage, { datos: d.nomina });
-  else paginaEl = h(TarjetaCreditoPage, { datos: d.tarjeta_credito, colores: d.colores });
+  else paginaEl = h(TarjetaCreditoPage, { datos: d.tarjeta_credito, colores: d.colores, aduanaFiltroActiva: enAduanaFiltro });
 
   const topnav = h("div", { className: "topnav" },
     TABS.map((t) => h("button", {
@@ -865,7 +872,19 @@ function App(props) {
   const pillAnio = h("div", { className: "filtro-pill" },
     h("span", {}, ICONOS.year),
     h("span", {}, h("span", { className: "fp-label" }, "Año"), h("span", { className: "fp-value" }, "2026")));
-  const headerRight = h("div", { style: { display: "flex", gap: 10 } }, pillPeriodo, pillAnio);
+
+  const pillAduana = tab !== "Utilidad Operativa" ? h("div", { className: "filtro-pill" },
+    h("span", {}, ICONOS.pin),
+    h("span", {},
+      h("span", { className: "fp-label" }, "Aduana"),
+      h("select", {
+        className: "fp-select", value: aduanaFiltro,
+        onChange: (e) => Streamlit.setComponentValue({ aduana_to: e.target.value, nav_to: tab }),
+      },
+        h("option", { value: "TODAS" }, "Todas"),
+        aduanasDisp.map((a) => h("option", { key: a, value: a }, a))))) : null;
+
+  const headerRight = h("div", { style: { display: "flex", gap: 10 } }, pillPeriodo, pillAnio, pillAduana);
 
   const header = h("div", { className: "dash-header" }, headerLeft, headerRight);
 

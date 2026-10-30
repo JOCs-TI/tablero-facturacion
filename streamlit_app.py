@@ -408,8 +408,7 @@ cobertura_concepto = (REC.loc[REC["concepto_cierre"].notna(), "importe"].sum() /
 # reconstruye cuando el usuario las vuelva a dar. Las otras 4 páginas son
 # lectura directa de la fuente, sin fórmulas inventadas.
 # ══════════════════════════════════════════════════════════════════════════════
-def _flujo_payload(es_ingreso):
-    base_df = EM if es_ingreso else REC
+def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura):
     if base_df.empty:
         return None
     ppto_key = "ingresos" if es_ingreso else "gastos"
@@ -460,12 +459,12 @@ def _flujo_payload(es_ingreso):
         "tiene_ppto": tiene_ppto, "mes_txt": MES_TXT,
         "kpis": {"tot_mes": tot_mes, "ppto_mes_tot": ppto_mes_tot, "ppto_acum_tot": ppto_acum_tot,
                 "n_contrapartes": n_contrapartes, "cumplimiento": cumplimiento,
-                "margen": MARGEN, "margen_pct": MARGEN_PCT},
+                "margen": margen, "margen_pct": margen_pct},
         "por_aduana": por_aduana,
         "por_concepto": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_dona.items()],
         "por_concepto_full": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_full.items()],
         "por_contraparte": [{"nombre": str(c), "monto": float(v)} for c, v in top10.items()],
-        "cobertura_concepto": (float(cobertura_concepto) if not es_ingreso else None),
+        "cobertura_concepto": (float(cobertura) if not es_ingreso else None),
     }
 
 def _construir_arbol_nomina(sueldos_f):
@@ -562,13 +561,13 @@ def _uo_payload():
     return {"tiene_ppto": tiene_ppto, "mes_txt": MES_TXT, "por_aduana": por_aduana,
            "ppto_por_aduana": ppto_por_aduana, "estado_resultados": estado_resultados}
 
-def _nomina_payload():
-    if sueldos_df.empty:
+def _nomina_payload(sueldos_f, tot_rec):
+    if sueldos_f.empty:
         return None
-    tot_nomina = float(sueldos_df["total"].sum())
-    pct_gasto_op = (tot_nomina / TOT_REC) if TOT_REC else None
+    tot_nomina = float(sueldos_f["total"].sum())
+    pct_gasto_op = (tot_nomina / tot_rec) if tot_rec else None
     return {"mes_txt": MES_TXT, "tot_nomina": tot_nomina, "pct_gasto_op": pct_gasto_op,
-           "arbol": _construir_arbol_nomina(sueldos_df)}
+           "arbol": _construir_arbol_nomina(sueldos_f)}
 
 def _tarjeta_payload():
     resultado = []
@@ -613,6 +612,31 @@ if "nav" not in st.session_state:
     st.session_state["nav"] = "Utilidad Operativa"
 pagina = st.session_state["nav"]
 
+# Filtro de aduana (pedido por el usuario, 2026-10-30): aplica a Ingresos,
+# Gastos, Nómina y Tarjeta de Crédito -- Utilidad Operativa NUNCA se filtra,
+# sigue usando EM/REC/sueldos_df completos sin tocar.
+ADUANAS_DISPONIBLES = sorted(
+    set(EM["aduana"].dropna()) | set(REC["aduana"].dropna()) | set(sueldos_df["aduana"].dropna())
+)
+if "aduana_filtro" not in st.session_state:
+    st.session_state["aduana_filtro"] = "TODAS"
+aduana_sel = st.session_state["aduana_filtro"]
+if aduana_sel != "TODAS" and aduana_sel not in ADUANAS_DISPONIBLES:
+    aduana_sel = st.session_state["aduana_filtro"] = "TODAS"
+
+if aduana_sel == "TODAS":
+    EM_F, REC_F, SUELDOS_F = EM, REC, sueldos_df
+else:
+    EM_F = EM[EM["aduana"] == aduana_sel]
+    REC_F = REC[REC["aduana"] == aduana_sel]
+    SUELDOS_F = sueldos_df[sueldos_df["aduana"] == aduana_sel]
+
+TOT_EM_F = float(EM_F["importe"].sum())
+TOT_REC_F = float(REC_F["importe"].sum())
+MARGEN_F = TOT_EM_F - TOT_REC_F
+MARGEN_PCT_F = MARGEN_F / TOT_EM_F if TOT_EM_F else None
+COBERTURA_F = (REC_F.loc[REC_F["concepto_cierre"].notna(), "importe"].sum() / TOT_REC_F) if TOT_REC_F else 0.0
+
 st.markdown("""<style>
     [data-testid='stSidebar'] { display: none !important; }
     [data-testid='stToolbar'] { display: none !important; }
@@ -633,14 +657,23 @@ st.markdown("""<style>
 _dash_payload = {
     "pagina_activa": pagina,
     "nav_opciones": NAV_OPCIONES,
+    "aduana_filtro": aduana_sel,
+    "aduanas_disponibles": ADUANAS_DISPONIBLES,
     "utilidad_operativa": _uo_payload(),
-    "gastos": _flujo_payload(es_ingreso=False),
-    "ingresos": _flujo_payload(es_ingreso=True),
-    "nomina": _nomina_payload(),
+    "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F),
+    "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F),
+    "nomina": _nomina_payload(SUELDOS_F, TOT_REC_F),
     "tarjeta_credito": _tarjeta_payload(),
     "colores": {"azul": JOCS_AZUL, "verde": JOCS_VERDE, "neg": C_NEG, "margen": C_MARGEN, "ppto": "#9DBFE8"},
 }
 _dash_resultado = _dashboard_component(datos=_dash_payload, key="fac_dashboard", default=None)
-if _dash_resultado and _dash_resultado.get("nav_to"):
-    st.session_state["nav"] = _dash_resultado["nav_to"]
-    st.rerun()
+if _dash_resultado:
+    _cambio = False
+    if _dash_resultado.get("nav_to") and _dash_resultado["nav_to"] != pagina:
+        st.session_state["nav"] = _dash_resultado["nav_to"]
+        _cambio = True
+    if _dash_resultado.get("aduana_to") is not None and _dash_resultado["aduana_to"] != aduana_sel:
+        st.session_state["aduana_filtro"] = _dash_resultado["aduana_to"]
+        _cambio = True
+    if _cambio:
+        st.rerun()
