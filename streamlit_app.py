@@ -37,10 +37,10 @@ MES_TXT = MES_COL_MAYUS[MES_ACTUAL].title()
 
 DRIVE_SHEET_IDS = {
     # Emitidas/Recibidas del mes actual -- TODAS las aduanas EXCEPTO Imile
-    # AIFA/Imile Laredo (ver nota junto a IMILE_ADUANAS abajo).
+    # AIFA en Emitidas (ver nota en load_emitidas_recibidas).
     "emitidas_recibidas_agosto": "11of64actB1Lubuz88Ai55UJzgnPz_N5QVlKyfpPUuRk",
-    # Emitidas/Recibidas del mes SIGUIENTE -- de aquí se sacan SOLO las filas
-    # de Imile AIFA/Imile Laredo (ver IMILE_ADUANAS).
+    # Emitidas/Recibidas del mes SIGUIENTE -- de aquí se saca SOLO Imile AIFA
+    # en Emitidas, y el MONTO 2 de KYA TI/Yatec en Recibidas.
     "emitidas_recibidas_septiembre": "1EmLMmxI_-u2DXsaXD2jZKjNKviTR6ovpIbk6SRG1R88",
     "sueldos": "11MqeqH1_vo7_qi1HWnMBDNMcGCvBe9rczwLJRFF340I",
     "costos_de_referencia": "1KcqmhUnh1-UHGdoF53kuDujoBZtiB94L5620ZIjFq4U",
@@ -51,12 +51,6 @@ DRIVE_SHEET_IDS = {
     "amex_angelica": "1OewXOKinbq6cOxedrb6NIiaeF3385eCrbmzZFdtBM-0",
     "corresponsalias": "1cGGgOZ1eX_gsKHcCeHEiPjYju5L1hmjB-HVq2hpa7oo",
 }
-# Imile AIFA/Imile Laredo SIEMPRE vienen un mes atrasadas en esta fuente: lo
-# que aparece en el archivo "Agosto" en realidad es la actividad de julio de
-# esas 2 aduanas, y lo que aparece en "Septiembre" es la actividad real de
-# agosto -- confirmado explícitamente por el usuario. Por eso para el mes
-# actual se excluyen del archivo de Agosto y se toman del de Septiembre.
-IMILE_ADUANAS = {"IMILE AIFA", "IMILE LAREDO"}
 
 CONCEPTO_PRESUPUESTO = {"INGRESOS": "ingresos", "CTO REF": "costos",
                         "SUELDOS": "sueldos", "GASTOS OP": "gastos"}
@@ -202,11 +196,15 @@ def load_emitidas_recibidas():
     for hoja, tipo in [("EMITIDAS", "EMITIDA"), ("RECIBIDAS", "RECIBIDA")]:
         d_ago = _leer_hoja_factura(path_ago, hoja, tipo)
         if tipo == "EMITIDA":
-            # Imile AIFA/Imile Laredo en EMITIDAS siempre vienen un mes
-            # atrasadas -- se excluyen de Agosto y se toman de Septiembre.
-            d_ago = d_ago[~d_ago["aduana"].isin(IMILE_ADUANAS)]
+            # Imile AIFA en EMITIDAS sigue viniendo un mes atrasada -- se
+            # excluye de Agosto y se toma de Septiembre. Imile Laredo YA NO
+            # tiene ese desfase: le agregaron una fila real en el archivo de
+            # Agosto ($2,386,661) y el usuario confirmo tomarla tal cual
+            # (2026-10-30) -- Septiembre no trae nada de Imile Laredo de
+            # todas formas.
+            d_ago = d_ago[d_ago["aduana"] != "IMILE AIFA"]
             d_sep = _leer_hoja_factura(path_sep, hoja, tipo)
-            d_sep = d_sep[d_sep["aduana"].isin(IMILE_ADUANAS)]
+            d_sep = d_sep[d_sep["aduana"] == "IMILE AIFA"]
             d = pd.concat([d_ago, d_sep], ignore_index=True)
         else:
             # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
