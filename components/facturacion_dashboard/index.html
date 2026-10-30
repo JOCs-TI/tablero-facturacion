@@ -560,8 +560,8 @@ function FlujoPage(props) {
       "Acumulado, comparativo contra el mes/año anterior y evolución mensual pendientes de cargar histórico real mes a mes (hoy solo hay un mes de datos reales en vivo)."),
 
     h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
-      h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Tendencia de crecimiento" : "Tendencia de gasto",
-        subtitulo: esIngreso ? "Variación mensual de los ingresos" : "Variación mensual del gasto real vs. presupuesto",
+      h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Variación vs. presupuesto" : "Tendencia de gasto",
+        subtitulo: esIngreso ? "Ingreso real vs. presupuesto mensual" : "Variación mensual del gasto real vs. presupuesto",
         categorias: [datos.mes_txt], real: [variacion], ppto: [0], nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
         nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, pctMode: true, nota }),
       esIngreso
