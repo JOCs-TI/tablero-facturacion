@@ -268,10 +268,10 @@ function DonutDetalleCard(props) {
   const { titulo, subtitulo, serieDona, totalTxt, subtotalTxt, tituloCol1, filasTabla } = props;
   const data = serieDona.map((d, i) => ({ nombre: d.concepto, valor: d.monto, color: colorFor(d.concepto === "Otros" ? -1 : i) }));
   const totTabla = filasTabla.reduce((s, f) => s + f.monto, 0) || 1;
-  return h("div", { className: "card" },
+  return h("div", { className: "card", style: { display: "flex", flexDirection: "column" } },
     h(CardHeader, { icono: "chart", titulo }),
     h("p", { className: "card-subtitle" }, subtitulo),
-    h("div", { className: "donut-detalle-row", style: { display: "flex", gap: 10, alignItems: "flex-start" } },
+    h("div", { className: "donut-detalle-row", style: { display: "flex", gap: 10, alignItems: "center", flex: 1 } },
       h("div", { style: { flex: "0 0 36%", position: "relative" } },
         h("div", { style: { height: 170 } },
           h(ResponsiveContainer, { width: "100%", height: "100%" },
