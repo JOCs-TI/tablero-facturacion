@@ -29,27 +29,51 @@ C_NEG = "#c0392b"
 # adivinados -- varios no estaban compartidos "cualquiera con el link" y
 # hubo que pedirle que los habilitara.
 # ══════════════════════════════════════════════════════════════════════════════
-MES_ACTUAL, ANIO_ACTUAL = 8, 2026
 MES_COL_MAYUS = {1: "ENERO", 2: "FEBRERO", 3: "MARZO", 4: "ABRIL", 5: "MAYO", 6: "JUNIO",
                  7: "JULIO", 8: "AGOSTO", 9: "SEPTIEMBRE", 10: "OCTUBRE", 11: "NOVIEMBRE",
                  12: "DICIEMBRE"}
-MES_TXT = MES_COL_MAYUS[MES_ACTUAL].title()
+ANIO_ACTUAL = 2026
+
+# Cada mes vive en su propia carpeta de Drive con 3 archivos propios
+# (Emitidas y Recibidas, Costos de Referencia, Corresponsalías) -- IDs
+# resueltos siguiendo los accesos directos de cada carpeta (2026-10-30,
+# carpeta "Julio" agregada a pedido del usuario: "vamos a cargar julio con
+# las mismas reglas que se uso para agosto"). 'emitidas_recibidas_siguiente'
+# es el archivo del mes SIGUIENTE a este periodo -- de ahí se saca SOLO
+# Imile AIFA en Emitidas, y el MONTO 2 de KYA TI/Yatec en Recibidas (ver
+# load_emitidas_recibidas). El nombre de la hoja de Corresponsalías NO es
+# consistente entre meses (Agosto usa el nombre del mes, Julio usa
+# "CORRESPONSALÍAS" a secas) -- por eso se guarda explícito por periodo en
+# vez de asumir que siempre es el mes en español.
+PERIODOS = {
+    "agosto": {
+        "mes_num": 8, "mes_txt": "Agosto",
+        "emitidas_recibidas": "11of64actB1Lubuz88Ai55UJzgnPz_N5QVlKyfpPUuRk",
+        "emitidas_recibidas_siguiente": "1EmLMmxI_-u2DXsaXD2jZKjNKviTR6ovpIbk6SRG1R88",  # Septiembre
+        "costos_de_referencia": "1KcqmhUnh1-UHGdoF53kuDujoBZtiB94L5620ZIjFq4U",
+        "corresponsalias": "1cGGgOZ1eX_gsKHcCeHEiPjYju5L1hmjB-HVq2hpa7oo",
+        "corresponsalias_hoja": "Agosto",
+    },
+    "julio": {
+        "mes_num": 7, "mes_txt": "Julio",
+        "emitidas_recibidas": "1XiYbkZ6AzZgyIy7mRKTt-KItpt8ULkXI792b4Sou8EU",
+        "emitidas_recibidas_siguiente": "11of64actB1Lubuz88Ai55UJzgnPz_N5QVlKyfpPUuRk",  # Agosto
+        "costos_de_referencia": "1xSSJaAsw4sH6Gle2qTb7heRAFNAaf9rsImYPBtKRpQs",
+        "corresponsalias": "1AF0CtzN6YXlOfcYIYB3VbppnuR86z9EfXbIha4deOD8",
+        "corresponsalias_hoja": "CORRESPONSALÍAS",
+    },
+}
+PERIODO_DEFAULT = "agosto"
 
 DRIVE_SHEET_IDS = {
-    # Emitidas/Recibidas del mes actual -- TODAS las aduanas EXCEPTO Imile
-    # AIFA en Emitidas (ver nota en load_emitidas_recibidas).
-    "emitidas_recibidas_agosto": "11of64actB1Lubuz88Ai55UJzgnPz_N5QVlKyfpPUuRk",
-    # Emitidas/Recibidas del mes SIGUIENTE -- de aquí se saca SOLO Imile AIFA
-    # en Emitidas, y el MONTO 2 de KYA TI/Yatec en Recibidas.
-    "emitidas_recibidas_septiembre": "1EmLMmxI_-u2DXsaXD2jZKjNKviTR6ovpIbk6SRG1R88",
+    # Fuentes compartidas entre todos los meses -- ya traen su propia
+    # columna de mes/periodo (filtran por MES_ACTUAL adentro del loader).
     "sueldos": "11MqeqH1_vo7_qi1HWnMBDNMcGCvBe9rczwLJRFF340I",
-    "costos_de_referencia": "1KcqmhUnh1-UHGdoF53kuDujoBZtiB94L5620ZIjFq4U",
     "honorarios_aa": "1mwdtAe4wt5hwDaSa-xnevCVvXJIaBQD4oIe2ypfZe7Q",
     "presupuestos_2026": "1eFuRgbRap7OL4uh6BY3cHLv6O1rHc3915pC6j13rfO4",
     "amex_alejandro": "1JNeNj6JERd13i5TZCCH1_SHY5vXv7dmUg0lUyRzS3ow",
     "amex_josefa": "1MQyjGwAHgRSMBJdZ_HFGskhplB2tk1JdDo2oY-6tzZ0",
     "amex_angelica": "1OewXOKinbq6cOxedrb6NIiaeF3385eCrbmzZFdtBM-0",
-    "corresponsalias": "1cGGgOZ1eX_gsKHcCeHEiPjYju5L1hmjB-HVq2hpa7oo",
 }
 
 CONCEPTO_PRESUPUESTO = {"INGRESOS": "ingresos", "CTO REF": "costos",
@@ -100,6 +124,18 @@ def _descargar_sheet_drive(file_id):
     resp.raise_for_status()
     return resp.content
 
+# Julio nombra esta aduana "IMILE" a secas en vez de "IMILE AIFA" (archivos
+# de meses mas recientes ya usan el nombre completo) -- sin este alias, el
+# desfase de un mes de Imile AIFA en Emitidas no reconoce esas filas y se
+# cuentan dos veces (confirmado revisando el archivo de Julio, 2026-10-30).
+ALIAS_ADUANA_FACTURA = {"IMILE": "IMILE AIFA"}
+
+def _normaliza_aduana(s):
+    if not isinstance(s, str):
+        return "SIN ADUANA"
+    s = s.upper()
+    return ALIAS_ADUANA_FACTURA.get(s, s)
+
 def _leer_hoja_factura(path, hoja, tipo_factura):
     """Misma lógica de siempre para leer 'emitidas'/'recibidas': columna de
     monto oficial ya convertida a MXN ('monto 1' en recibidas, 'monto' en
@@ -121,7 +157,7 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     monto = pd.to_numeric(coalesce_col(df, "monto 1", "monto"), errors="coerce")
     out["importe"] = monto.fillna(0.0)
     aduana = coalesce_col(df, "aduana").map(norm_txt)
-    out["aduana"] = aduana.map(lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+    out["aduana"] = aduana.map(_normaliza_aduana)
     tipo_cc = coalesce_col(df, "tipo").map(norm_txt)
     out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
     out["concepto_cierre"] = coalesce_col(df, "concepto para cierre", " ").map(norm_txt)
@@ -158,7 +194,7 @@ def _leer_kya_yatec_monto2_mes_anterior(path, hoja):
     out["descripcion"] = coalesce_col(df, "descripcion").map(norm_txt)
     out["importe"] = pd.to_numeric(coalesce_col(df, "monto 2"), errors="coerce").fillna(0.0)
     aduana = coalesce_col(df, "aduana").map(norm_txt)
-    out["aduana"] = aduana.map(lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+    out["aduana"] = aduana.map(_normaliza_aduana)
     tipo_cc = coalesce_col(df, "tipo").map(norm_txt)
     out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
     out["concepto_cierre"] = coalesce_col(df, "concepto para cierre", " ").map(norm_txt)
@@ -168,13 +204,15 @@ def _leer_kya_yatec_monto2_mes_anterior(path, hoja):
 
 CORRESPONSALIAS_ADUANAS = {"VERACRUZ", "MANZANILLO", "LAZARO"}
 
-def _leer_corresponsalias(path):
+def _leer_corresponsalias(path, hoja):
     """Facturas de agencias aduanales corresponsales de Veracruz/Manzanillo/
     Lazaro -- no vienen en el archivo de Emitidas/Recibidas pero si son gasto
     real de esas 3 aduanas (confirmado con el usuario, 2026-10-28). Se usa
     'Attribute:Total' (con IVA, Total = SubTotal x 1.16), igual que el resto
-    de montos de Recibidas que ya son el total de la factura."""
-    df = pd.read_excel(path, sheet_name="Agosto", header=0)
+    de montos de Recibidas que ya son el total de la factura. El nombre de
+    'hoja' varia por periodo -- no siempre es el nombre del mes (ver
+    PERIODOS[...]['corresponsalias_hoja'])."""
+    df = pd.read_excel(path, sheet_name=hoja, header=0)
     df.columns = [str(c).strip() for c in df.columns]
     df = df[df["ADUANA"].isin(CORRESPONSALIAS_ADUANAS)]
     out = pd.DataFrame(index=df.index)
@@ -189,33 +227,37 @@ def _leer_corresponsalias(path):
     return out[out["importe"] != 0]
 
 @st.cache_data(ttl=300, show_spinner="Cargando facturación...")
-def load_emitidas_recibidas():
-    path_ago = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["emitidas_recibidas_agosto"]))
-    path_sep = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["emitidas_recibidas_septiembre"]))
+def load_emitidas_recibidas(periodo):
+    """'periodo' es una clave de PERIODOS (ej. 'agosto', 'julio') -- mismas
+    reglas para cualquier mes, solo cambian los archivos de origen (ver
+    PERIODOS). Parametrizado 2026-10-30 a pedido del usuario ("vamos a
+    cargar julio con las mismas reglas que se uso para agosto")."""
+    cfg = PERIODOS[periodo]
+    path_mes = BytesIO(_descargar_sheet_drive(cfg["emitidas_recibidas"]))
+    path_sig = BytesIO(_descargar_sheet_drive(cfg["emitidas_recibidas_siguiente"]))
     resultado = {}
     for hoja, tipo in [("EMITIDAS", "EMITIDA"), ("RECIBIDAS", "RECIBIDA")]:
-        d_ago = _leer_hoja_factura(path_ago, hoja, tipo)
+        d_mes = _leer_hoja_factura(path_mes, hoja, tipo)
         if tipo == "EMITIDA":
             # Imile AIFA en EMITIDAS sigue viniendo un mes atrasada -- se
-            # excluye de Agosto y se toma de Septiembre. Imile Laredo YA NO
-            # tiene ese desfase: le agregaron una fila real en el archivo de
-            # Agosto ($2,386,661) y el usuario confirmo tomarla tal cual
-            # (2026-10-30) -- Septiembre no trae nada de Imile Laredo de
-            # todas formas.
-            d_ago = d_ago[d_ago["aduana"] != "IMILE AIFA"]
-            d_sep = _leer_hoja_factura(path_sep, hoja, tipo)
-            d_sep = d_sep[d_sep["aduana"] == "IMILE AIFA"]
-            d = pd.concat([d_ago, d_sep], ignore_index=True)
+            # excluye del mes actual y se toma del mes siguiente. Imile
+            # Laredo YA NO tiene ese desfase, se toma tal cual venga en el
+            # archivo del mes actual (confirmado con el usuario, 2026-10-30).
+            d_mes = d_mes[d_mes["aduana"] != "IMILE AIFA"]
+            d_sig = _leer_hoja_factura(path_sig, hoja, tipo)
+            d_sig = d_sig[d_sig["aduana"] == "IMILE AIFA"]
+            d = pd.concat([d_mes, d_sig], ignore_index=True)
         else:
             # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
-            # en el archivo de Agosto -- a diferencia de Emitidas, aqui NO
-            # se sustituyen desde Septiembre (confirmado con el usuario).
-            # KYA TI y Yatec si se completan con lo que caiga en el 'MONTO 2'
-            # de Septiembre, que les pertenece a Agosto.
-            d_kya_sep = _leer_kya_yatec_monto2_mes_anterior(path_sep, hoja)
-            path_corr = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["corresponsalias"]))
-            d_corr = _leer_corresponsalias(path_corr)
-            d = pd.concat([d_ago, d_kya_sep, d_corr], ignore_index=True)
+            # en el archivo del mes actual -- a diferencia de Emitidas, aqui
+            # NO se sustituyen desde el mes siguiente (confirmado con el
+            # usuario). KYA TI y Yatec si se completan con lo que caiga en
+            # el 'MONTO 2' del archivo del mes siguiente, que les pertenece
+            # a este periodo.
+            d_kya_sig = _leer_kya_yatec_monto2_mes_anterior(path_sig, hoja)
+            path_corr = BytesIO(_descargar_sheet_drive(cfg["corresponsalias"]))
+            d_corr = _leer_corresponsalias(path_corr, cfg["corresponsalias_hoja"])
+            d = pd.concat([d_mes, d_kya_sig, d_corr], ignore_index=True)
         d = d[~d["cancelada"]]
         # A pedido del usuario (2026-10-28): "solo PROPIOS" -- aplica tanto en
         # Emitidas como en Recibidas (corrigio la regla anterior, que dejaba
@@ -225,11 +267,11 @@ def load_emitidas_recibidas():
     return resultado["EMITIDA"], resultado["RECIBIDA"]
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_sueldos():
+def load_sueldos(mes_num):
     path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["sueldos"]))
     df = pd.read_excel(path, sheet_name="ACUMULADO", header=0)
     df.columns = [str(c).strip() for c in df.columns]
-    df = df[df["MES NO."] == MES_ACTUAL].copy()
+    df = df[df["MES NO."] == mes_num].copy()
     out = pd.DataFrame(index=df.index)
     out["nombre"] = coalesce_col(df, "nombre corregido", "NOMBRE").map(norm_txt)
     out["aduana"] = coalesce_col(df, "Departamento").map(norm_txt).map(
@@ -240,7 +282,7 @@ def load_sueldos():
     return out[out["nombre"].notna() & (out["total"] != 0)].reset_index(drop=True)
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_costos_referencia():
+def load_costos_referencia(periodo):
     """Pestaña real 'Reporte de Facturas'. La columna 'Aduana' trae un código
     numérico que ni siquiera es único por aduana (confirmado con el usuario)
     -- se usa la columna 'CC', que sí trae el nombre correcto por fila. El
@@ -250,8 +292,9 @@ def load_costos_referencia():
     otras dos '0.4'/'0.3' que parecen un reparto en 3 partes de 'TOTAL
     BASE'). La hoja trae una fila de TOTAL GENERAL embebida al final
     ('Clave Cliente' = 'TOTAL GENERAL') que hay que excluir, si no duplica
-    la suma (mismo patrón que [[utilidad-cliente-suma-total-duplica]])."""
-    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["costos_de_referencia"]))
+    la suma (mismo patrón que [[utilidad-cliente-suma-total-duplica]]).
+    Archivo propio por periodo (ver PERIODOS)."""
+    path = BytesIO(_descargar_sheet_drive(PERIODOS[periodo]["costos_de_referencia"]))
     df = pd.read_excel(path, sheet_name="Reporte de Facturas", header=0)
     df.columns = [str(c).strip() for c in df.columns]
     es_total = coalesce_col(df, "Clave Cliente").astype(str).str.upper().str.contains("TOTAL", na=False)
@@ -263,15 +306,15 @@ def load_costos_referencia():
     return out[out["monto"] != 0].reset_index(drop=True)
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_honorarios_aa():
+def load_honorarios_aa(mes_num):
     """Pestaña 'Detalle' -- ya trae el nombre de la aduana directo (columna
-    'NOMBRE ADUANA', no un código). Se filtra a MES_ACTUAL (columna 'Mes'
+    'NOMBRE ADUANA', no un código). Se filtra a mes_num (columna 'Mes'
     viene mezclada int/str en el archivo, por eso el cast a str antes de
     comparar)."""
     path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["honorarios_aa"]))
     df = pd.read_excel(path, sheet_name="Detalle", header=0)
     df.columns = [str(c).strip() for c in df.columns]
-    df = df[df["Mes"].astype(str) == str(MES_ACTUAL)].copy()
+    df = df[df["Mes"].astype(str) == str(mes_num)].copy()
     out = pd.DataFrame(index=df.index)
     out["aduana"] = coalesce_col(df, "NOMBRE ADUANA").map(norm_txt).map(
         lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
@@ -348,16 +391,16 @@ def _leer_bloques_presupuesto_anual(ws, meses_idx):
     return resultado
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_presupuesto():
-    """Regresa (mensual, acumulado, ppto_anual) del mes actual -- cada uno
+def load_presupuesto(mes_num):
+    """Regresa (mensual, acumulado, ppto_anual) del mes dado -- cada uno
     {concepto: {aduana: valor}}. 'ppto_anual' es el acumulado a DICIEMBRE
     (el total real del año completo según el presupuesto, ya no una
     proyección como antes del reset)."""
     import openpyxl
     contenido = _descargar_sheet_drive(DRIVE_SHEET_IDS["presupuestos_2026"])
     wb = openpyxl.load_workbook(BytesIO(contenido), data_only=True)
-    resultado = _leer_bloques_presupuesto_anual(wb[wb.sheetnames[0]], [MES_ACTUAL, 12])
-    mensual, acumulado = resultado[MES_ACTUAL]
+    resultado = _leer_bloques_presupuesto_anual(wb[wb.sheetnames[0]], [mes_num, 12])
+    mensual, acumulado = resultado[mes_num]
     _, ppto_anual = resultado[12]
     return mensual, acumulado, ppto_anual
 
@@ -396,12 +439,23 @@ def load_amex(persona):
     out["facturado"] = out["uuids"].map(len) > 0
     return out.reset_index(drop=True)
 
+# Selector de periodo (pedido por el usuario, 2026-10-30: "vamos a cargar
+# julio con las mismas reglas que se uso para agosto") -- mismo mecanismo
+# que el filtro de aduana (pill en el header + session_state).
+if "periodo_filtro" not in st.session_state:
+    st.session_state["periodo_filtro"] = PERIODO_DEFAULT
+periodo_sel = st.session_state["periodo_filtro"]
+if periodo_sel not in PERIODOS:
+    periodo_sel = st.session_state["periodo_filtro"] = PERIODO_DEFAULT
+MES_ACTUAL = PERIODOS[periodo_sel]["mes_num"]
+MES_TXT = PERIODOS[periodo_sel]["mes_txt"]
+
 try:
-    EM, REC = load_emitidas_recibidas()
-    sueldos_df = load_sueldos()
-    costos_ref_df = load_costos_referencia()
-    honorarios_aa_df = load_honorarios_aa()
-    ppto_mensual, ppto_acumulado, ppto_anual = load_presupuesto()
+    EM, REC = load_emitidas_recibidas(periodo_sel)
+    sueldos_df = load_sueldos(MES_ACTUAL)
+    costos_ref_df = load_costos_referencia(periodo_sel)
+    honorarios_aa_df = load_honorarios_aa(MES_ACTUAL)
+    ppto_mensual, ppto_acumulado, ppto_anual = load_presupuesto(MES_ACTUAL)
     amex_alejandro_df = load_amex("ALEJANDRO")
     amex_josefa_df = load_amex("JOSEFA")
     amex_angelica_df = load_amex("ANGELICA")
@@ -670,11 +724,16 @@ st.markdown("""<style>
     }
     </style>""", unsafe_allow_html=True)
 
+PERIODOS_DISPONIBLES = [{"clave": k, "mes_txt": v["mes_txt"]}
+                        for k, v in sorted(PERIODOS.items(), key=lambda kv: kv[1]["mes_num"])]
+
 _dash_payload = {
     "pagina_activa": pagina,
     "nav_opciones": NAV_OPCIONES,
     "aduana_filtro": aduana_sel,
     "aduanas_disponibles": ADUANAS_DISPONIBLES,
+    "periodo_filtro": periodo_sel,
+    "periodos_disponibles": PERIODOS_DISPONIBLES,
     "utilidad_operativa": _uo_payload(),
     "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
                               aduana_sel if aduana_sel != "TODAS" else None),
@@ -692,6 +751,13 @@ if _dash_resultado:
         _cambio = True
     if _dash_resultado.get("aduana_to") is not None and _dash_resultado["aduana_to"] != aduana_sel:
         st.session_state["aduana_filtro"] = _dash_resultado["aduana_to"]
+        _cambio = True
+    if _dash_resultado.get("periodo_to") is not None and _dash_resultado["periodo_to"] != periodo_sel:
+        st.session_state["periodo_filtro"] = _dash_resultado["periodo_to"]
+        # Al cambiar de periodo, las aduanas disponibles pueden cambiar --
+        # se resetea a "TODAS" para no quedar filtrado a una aduana que no
+        # exista en el nuevo periodo (se revalida de todas formas arriba).
+        st.session_state["aduana_filtro"] = "TODAS"
         _cambio = True
     if _cambio:
         st.rerun()

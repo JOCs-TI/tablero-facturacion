@@ -884,6 +884,9 @@ function App(props) {
   const aduanasDisp = d.aduanas_disponibles || [];
   const enAduanaFiltro = aduanaFiltro !== "TODAS";
 
+  const periodoFiltro = d.periodo_filtro || "";
+  const periodosDisp = d.periodos_disponibles || [];
+
   let paginaEl;
   if (tab === "Utilidad Operativa") paginaEl = h(UtilidadOperativaPage, { datos: d.utilidad_operativa, colores: d.colores });
   else if (tab === "Gastos" || tab === "Ingresos") paginaEl = h(FlujoPage, { datos: datosActivos, esIngreso: tab === "Ingresos", colores: d.colores });
@@ -901,7 +904,13 @@ function App(props) {
 
   const pillPeriodo = h("div", { className: "filtro-pill" },
     h("span", {}, ICONOS.calendar),
-    h("span", {}, h("span", { className: "fp-label" }, "Periodo"), h("span", { className: "fp-value" }, mesTxt)));
+    h("span", {},
+      h("span", { className: "fp-label" }, "Periodo"),
+      h("select", {
+        className: "fp-select", value: periodoFiltro,
+        onChange: (e) => Streamlit.setComponentValue({ periodo_to: e.target.value, nav_to: tab }),
+      },
+        periodosDisp.map((p) => h("option", { key: p.clave, value: p.clave }, p.mes_txt)))));
   const pillAnio = h("div", { className: "filtro-pill" },
     h("span", {}, ICONOS.year),
     h("span", {}, h("span", { className: "fp-label" }, "Año"), h("span", { className: "fp-value" }, "2026")));
