@@ -74,6 +74,7 @@ DRIVE_SHEET_IDS = {
     "amex_alejandro": "1JNeNj6JERd13i5TZCCH1_SHY5vXv7dmUg0lUyRzS3ow",
     "amex_josefa": "1MQyjGwAHgRSMBJdZ_HFGskhplB2tk1JdDo2oY-6tzZ0",
     "amex_angelica": "1OewXOKinbq6cOxedrb6NIiaeF3385eCrbmzZFdtBM-0",
+    "efectivale": "1NE0MG2qaY8k9uiSwRPviqXEfa9uIOezHsHGSg8KruNY",
 }
 
 CONCEPTO_PRESUPUESTO = {"INGRESOS": "ingresos", "CTO REF": "costos",
@@ -130,10 +131,17 @@ def _descargar_sheet_drive(file_id):
 # cuentan dos veces (confirmado revisando el archivo de Julio, 2026-10-30).
 ALIAS_ADUANA_FACTURA = {"IMILE": "IMILE AIFA"}
 
+import unicodedata
+
 def _normaliza_aduana(s):
+    """Además del alias de Imile AIFA, quita acentos -- algunas fuentes
+    (ej. Efectivale) escriben 'TRÁNSITO' con acento mientras que
+    Emitidas/Recibidas usa 'TRANSITO' sin acento, y sin esto aparecían como
+    dos aduanas distintas en el filtro."""
     if not isinstance(s, str):
         return "SIN ADUANA"
     s = s.upper()
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     return ALIAS_ADUANA_FACTURA.get(s, s)
 
 def _leer_hoja_factura(path, hoja, tipo_factura):
@@ -219,7 +227,44 @@ def _leer_corresponsalias(path, hoja):
     out["contraparte"] = df["Emisor.Attribute:Nombre"].map(norm_txt)
     out["descripcion"] = "Corresponsalía"
     out["importe"] = pd.to_numeric(df["Attribute:Total"], errors="coerce").fillna(0.0)
-    out["aduana"] = df["ADUANA"].map(lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+    out["aduana"] = df["ADUANA"].map(_normaliza_aduana)
+    out["tipo_cc"] = "PROPIOS"
+    out["concepto_cierre"] = None
+    out["cancelada"] = False
+    out["tipo_factura"] = "RECIBIDA"
+    return out[out["importe"] != 0]
+
+def _leer_efectivale(path, mes_txt):
+    """Efectivale es una tarjeta prepagada corporativa -- un solo archivo
+    con una hoja por mes (ENERO..DICIEMBRE). No se tomaba en cuenta para
+    Gastos hasta ahora (confirmado con el usuario, 2026-10-30): "sumar los
+    cargos a la aduana que dice y los que esten en abono los restas al
+    gasto". 'Cargo' = dispersión de dinero a la tarjeta de una aduana (gasto
+    real de esa aduana, columna 'Centro de costo'); 'Abono' con Centro de
+    costo lleno = devolución desde esa tarjeta (se resta del gasto); 'Abono'
+    SIN Centro de costo = carga de fondos al monedero general (no es gasto
+    de ninguna aduana, se ignora). La hoja trae una fila de total embebida
+    al final, sin fecha/concepto/centro de costo -- se excluye con el mismo
+    criterio, mismo patrón que [[utilidad-cliente-suma-total-duplica]]."""
+    try:
+        df = pd.read_excel(path, sheet_name=mes_txt.upper(), header=0)
+    except ValueError:
+        return pd.DataFrame(columns=["contraparte", "descripcion", "importe", "aduana",
+                                     "tipo_cc", "concepto_cierre", "cancelada", "tipo_factura"])
+    df.columns = [str(c).strip() for c in df.columns]
+    cc = coalesce_col(df, "Centro de costo", "CENTRO DE COSTO", "Centro de costos").map(norm_txt)
+    cargo = pd.to_numeric(coalesce_col(df, "Cargo"), errors="coerce")
+    abono = pd.to_numeric(coalesce_col(df, "Abono"), errors="coerce")
+    concepto = coalesce_col(df, "Concepto", "Tarjeta").map(norm_txt)
+    es_fila_total = cc.isna() & concepto.isna()
+    cargos = pd.DataFrame({"aduana": cc, "importe": cargo})[cargo.notna() & cc.notna() & ~es_fila_total]
+    devoluciones = pd.DataFrame({"aduana": cc, "importe": -abono})[abono.notna() & cc.notna() & ~es_fila_total]
+    d = pd.concat([cargos, devoluciones], ignore_index=True)
+    out = pd.DataFrame(index=d.index)
+    out["contraparte"] = "Efectivale"
+    out["descripcion"] = "Tarjeta prepagada"
+    out["importe"] = d["importe"]
+    out["aduana"] = d["aduana"].map(_normaliza_aduana)
     out["tipo_cc"] = "PROPIOS"
     out["concepto_cierre"] = None
     out["cancelada"] = False
@@ -257,7 +302,9 @@ def load_emitidas_recibidas(periodo):
             d_kya_sig = _leer_kya_yatec_monto2_mes_anterior(path_sig, hoja)
             path_corr = BytesIO(_descargar_sheet_drive(cfg["corresponsalias"]))
             d_corr = _leer_corresponsalias(path_corr, cfg["corresponsalias_hoja"])
-            d = pd.concat([d_mes, d_kya_sig, d_corr], ignore_index=True)
+            path_efect = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["efectivale"]))
+            d_efect = _leer_efectivale(path_efect, cfg["mes_txt"])
+            d = pd.concat([d_mes, d_kya_sig, d_corr, d_efect], ignore_index=True)
         d = d[~d["cancelada"]]
         # A pedido del usuario (2026-10-28): "solo PROPIOS" -- aplica tanto en
         # Emitidas como en Recibidas (corrigio la regla anterior, que dejaba
@@ -275,7 +322,7 @@ def load_sueldos(mes_num):
     out = pd.DataFrame(index=df.index)
     out["nombre"] = coalesce_col(df, "nombre corregido", "NOMBRE").map(norm_txt)
     out["aduana"] = coalesce_col(df, "Departamento").map(norm_txt).map(
-        lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+        _normaliza_aduana)
     for col_src, _ in COLS_NOMINA:
         out[col_src] = pd.to_numeric(coalesce_col(df, col_src), errors="coerce").fillna(0.0)
     out["total"] = pd.to_numeric(coalesce_col(df, "TOTAL2", "Total"), errors="coerce").fillna(0.0)
@@ -301,7 +348,7 @@ def load_costos_referencia(periodo):
     df = df[~es_total]
     out = pd.DataFrame(index=df.index)
     out["aduana"] = coalesce_col(df, "CC").map(norm_txt).map(
-        lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+        _normaliza_aduana)
     out["monto"] = pd.to_numeric(coalesce_col(df, "0.2"), errors="coerce").fillna(0.0)
     return out[out["monto"] != 0].reset_index(drop=True)
 
@@ -317,7 +364,7 @@ def load_honorarios_aa(mes_num):
     df = df[df["Mes"].astype(str) == str(mes_num)].copy()
     out = pd.DataFrame(index=df.index)
     out["aduana"] = coalesce_col(df, "NOMBRE ADUANA").map(norm_txt).map(
-        lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
+        _normaliza_aduana)
     out["monto"] = pd.to_numeric(coalesce_col(df, "HONORARIOS DE AGENTE ADUANAL"), errors="coerce").fillna(0.0)
     return out[out["monto"] != 0].reset_index(drop=True)
 
