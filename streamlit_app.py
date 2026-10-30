@@ -243,14 +243,23 @@ def load_sueldos():
 def load_costos_referencia():
     """Pestaña real 'Reporte de Facturas'. La columna 'Aduana' trae un código
     numérico que ni siquiera es único por aduana (confirmado con el usuario)
-    -- se usa la columna 'CC', que sí trae el nombre correcto por fila."""
+    -- se usa la columna 'CC', que sí trae el nombre correcto por fila. El
+    monto YA NO sale de 'Total Conceptos AA' (se quedó en $0 para la mayoría
+    de las filas nuevas) -- el usuario confirmó (2026-10-30) que ahora hay
+    que tomar la columna con encabezado '0.2' (letra de Excel BJ, junto a
+    otras dos '0.4'/'0.3' que parecen un reparto en 3 partes de 'TOTAL
+    BASE'). La hoja trae una fila de TOTAL GENERAL embebida al final
+    ('Clave Cliente' = 'TOTAL GENERAL') que hay que excluir, si no duplica
+    la suma (mismo patrón que [[utilidad-cliente-suma-total-duplica]])."""
     path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["costos_de_referencia"]))
     df = pd.read_excel(path, sheet_name="Reporte de Facturas", header=0)
     df.columns = [str(c).strip() for c in df.columns]
+    es_total = coalesce_col(df, "Clave Cliente").astype(str).str.upper().str.contains("TOTAL", na=False)
+    df = df[~es_total]
     out = pd.DataFrame(index=df.index)
     out["aduana"] = coalesce_col(df, "CC").map(norm_txt).map(
         lambda s: s.upper() if isinstance(s, str) else "SIN ADUANA")
-    out["monto"] = pd.to_numeric(coalesce_col(df, "Total Conceptos AA"), errors="coerce").fillna(0.0)
+    out["monto"] = pd.to_numeric(coalesce_col(df, "0.2"), errors="coerce").fillna(0.0)
     return out[out["monto"] != 0].reset_index(drop=True)
 
 @st.cache_data(ttl=300, show_spinner=False)
