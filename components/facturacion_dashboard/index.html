@@ -227,8 +227,26 @@ function BarChartCard(props) {
   );
 }
 
+function TendenciaTooltipCifras(props) {
+  const { active, payload, label, colorReal, colorPpto } = props;
+  if (!active || !payload || !payload.length) return null;
+  const real = payload.find((p) => p.dataKey === "real");
+  const ppto = payload.find((p) => p.dataKey === "ppto");
+  const variacionPct = (real && ppto && ppto.value) ? (real.value / ppto.value - 1) : null;
+  return h("div", { style: {
+    background: "#fff", border: "1px solid #E3E6EA", borderRadius: 8, padding: "10px 12px",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.12)", fontSize: 12,
+  } },
+    h("div", { style: { fontWeight: 700, marginBottom: 4 } }, label),
+    real ? h("div", { style: { color: colorReal } }, `${real.name} : ${fmt(real.value)}`) : null,
+    ppto ? h("div", { style: { color: colorPpto } }, `${ppto.name} : ${fmt(ppto.value)}`) : null,
+    variacionPct !== null ? h("div", { style: { color: "#6B7280", marginTop: 4 } },
+      `Variación vs. presupuesto : ${variacionPct >= 0 ? "+" : ""}${(variacionPct * 100).toFixed(1)}%`) : null);
+}
+
 function LineChartCard(props) {
-  const { icono, titulo, subtitulo, categorias, real, ppto, nombreReal, nombrePpto, colorReal, colorPpto, nota, pctMode, yDomain, yTicks } = props;
+  const { icono, titulo, subtitulo, categorias, real, ppto, nombreReal, nombrePpto, colorReal, colorPpto, nota, pctMode, yDomain, yTicks, mostrarEtiquetas } = props;
+  const mostrarEtiq = mostrarEtiquetas !== false;
   const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i] }));
   const fmtEje = pctMode ? ((v) => (v * 100).toFixed(2) + "%") : fmt;
   // Margen del eje proporcional al rango de los datos (12%) en vez de un
@@ -258,16 +276,18 @@ function LineChartCard(props) {
             domain: yDomain || [(dataMin) => Math.min(dataMin, 0) - margenEje, (dataMax) => Math.max(dataMax, 0) + margenEje],
             ticks: yTicks || undefined,
           }),
-          h(Tooltip, { formatter: (v) => fmtEje(v) }),
+          h(Tooltip, pctMode
+            ? { formatter: (v) => fmtEje(v) }
+            : { content: (tp) => h(TendenciaTooltipCifras, { ...tp, colorReal, colorPpto }) }),
           h(Legend, { wrapperStyle: { fontSize: 12 } }),
           h(Line, {
             type: "monotone", dataKey: "real", name: nombreReal, stroke: colorReal, strokeWidth: 3, dot: { r: 5 },
-            label: { position: "top", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: colorReal },
+            label: mostrarEtiq ? { position: "top", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: colorReal } : false,
           }),
           h(Line, {
             type: "monotone", dataKey: "ppto", name: nombrePpto, stroke: colorPpto, strokeWidth: 2, strokeDasharray: "5 3",
             dot: { r: 5, strokeDasharray: "0", fill: colorPpto, stroke: "#fff", strokeWidth: 1.5 },
-            label: { position: "bottom", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: "#6B7280" },
+            label: mostrarEtiq ? { position: "bottom", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: "#6B7280" } : false,
           })
         ))),
     nota ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)", textAlign: "center" } }, nota) : null
@@ -575,7 +595,8 @@ function FlujoPage(props) {
         nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
         nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, pctMode: !esIngreso, nota,
         yDomain: esIngreso ? [0, 20000000] : undefined,
-        yTicks: esIngreso ? [0, 5000000, 10000000, 15000000, 20000000] : undefined }),
+        yTicks: esIngreso ? [0, 5000000, 10000000, 15000000, 20000000] : undefined,
+        mostrarEtiquetas: !esIngreso }),
       esIngreso
         ? h(ResumenAduanaIngresosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel })
         : h(ResumenAduanaGastosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel, tot: k.tot_mes })),
