@@ -361,9 +361,16 @@ def load_presupuesto():
     _, ppto_anual = resultado[12]
     return mensual, acumulado, ppto_anual
 
-def _ppto_total(d, concepto):
-    """Suma el total de un concepto del presupuesto entre todas las aduanas."""
-    return float(sum(d.get(concepto, {}).values()))
+def _ppto_total(d, concepto, aduana=None):
+    """Suma el total de un concepto del presupuesto. Si se da 'aduana', solo
+    esa aduana; si no (default), la suma entre todas. El argumento se pasa
+    explicito desde _flujo_payload (que sí respeta el filtro de aduana del
+    header) y se omite desde _uo_payload (que nunca debe verse afectado por
+    ese filtro, igual que el resto de Utilidad Operativa)."""
+    valores = d.get(concepto, {})
+    if aduana is not None:
+        return float(valores.get(aduana, 0.0))
+    return float(sum(valores.values()))
 
 import re
 UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
@@ -417,14 +424,14 @@ cobertura_concepto = (REC.loc[REC["concepto_cierre"].notna(), "importe"].sum() /
 # reconstruye cuando el usuario las vuelva a dar. Las otras 4 páginas son
 # lectura directa de la fuente, sin fórmulas inventadas.
 # ══════════════════════════════════════════════════════════════════════════════
-def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura):
+def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_filtro=None):
     if base_df.empty:
         return None
     ppto_key = "ingresos" if es_ingreso else "gastos"
     tiene_ppto = bool(ppto_mensual)
     tot_mes = float(base_df["importe"].sum())
-    ppto_mes_tot = _ppto_total(ppto_mensual, ppto_key) if tiene_ppto else None
-    ppto_acum_tot = _ppto_total(ppto_acumulado, ppto_key) if tiene_ppto else None
+    ppto_mes_tot = _ppto_total(ppto_mensual, ppto_key, aduana_filtro) if tiene_ppto else None
+    ppto_acum_tot = _ppto_total(ppto_acumulado, ppto_key, aduana_filtro) if tiene_ppto else None
     n_contrapartes = int(base_df.loc[base_df["importe"] != 0, "contraparte"].nunique())
 
     campo_concepto = "descripcion" if es_ingreso else "concepto_cierre"
@@ -669,8 +676,10 @@ _dash_payload = {
     "aduana_filtro": aduana_sel,
     "aduanas_disponibles": ADUANAS_DISPONIBLES,
     "utilidad_operativa": _uo_payload(),
-    "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F),
-    "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F),
+    "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
+                              aduana_sel if aduana_sel != "TODAS" else None),
+    "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
+                                aduana_sel if aduana_sel != "TODAS" else None),
     "nomina": _nomina_payload(SUELDOS_F, TOT_REC_F),
     "tarjeta_credito": _tarjeta_payload(),
     "colores": {"azul": JOCS_AZUL, "verde": JOCS_VERDE, "neg": C_NEG, "margen": C_MARGEN, "ppto": "#9DBFE8"},
