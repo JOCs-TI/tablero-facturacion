@@ -537,12 +537,15 @@ cobertura_concepto = (REC.loc[REC["concepto_cierre"].notna(), "importe"].sum() /
 # reconstruye cuando el usuario las vuelva a dar. Las otras 4 páginas son
 # lectura directa de la fuente, sin fórmulas inventadas.
 # ══════════════════════════════════════════════════════════════════════════════
-def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_filtro=None):
+def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_filtro=None, honorarios_df=None):
     if base_df.empty:
         return None
     ppto_key = "ingresos" if es_ingreso else "gastos"
     tiene_ppto = bool(ppto_mensual)
-    tot_mes = float(base_df["importe"].sum())
+    honor_total = float(honorarios_df["monto"].sum()) if honorarios_df is not None else 0.0
+    honor_ad = (honorarios_df.groupby("aduana")["monto"].sum()
+               if honorarios_df is not None and not honorarios_df.empty else pd.Series(dtype=float))
+    tot_mes = float(base_df["importe"].sum()) + honor_total
     ppto_mes_tot = _ppto_total(ppto_mensual, ppto_key, aduana_filtro) if tiene_ppto else None
     ppto_acum_tot = _ppto_total(ppto_acumulado, ppto_key, aduana_filtro) if tiene_ppto else None
     n_contrapartes = int(base_df.loc[base_df["importe"] != 0, "contraparte"].nunique())
@@ -551,6 +554,8 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
     conc = base_df.copy()
     conc[campo_concepto] = conc[campo_concepto].fillna("Sin categorizar")
     por_concepto_full = conc.groupby(campo_concepto)["importe"].sum()
+    if honor_total:
+        por_concepto_full = pd.concat([por_concepto_full, pd.Series({"Honorarios AA": honor_total})])
     por_concepto_full = por_concepto_full[por_concepto_full > 0].sort_values(ascending=False)
     por_concepto_dona = por_concepto_full.head(6)
     if len(por_concepto_full) > 6:
@@ -563,9 +568,11 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
         top10 = pd.concat([top10, pd.Series({"Otros": por_contraparte_full.iloc[10:].sum()})])
 
     por_aduana = []
-    for aduana in sorted(base_df["aduana"].dropna().unique().tolist()):
+    aduanas_todas = sorted(set(base_df["aduana"].dropna().unique().tolist()) | set(honor_ad.index))
+    for aduana in aduanas_todas:
         base_aduana = base_df[base_df["aduana"] == aduana]
-        tot_aduana = float(base_aduana["importe"].sum())
+        honor_aduana = float(honor_ad.get(aduana, 0.0))
+        tot_aduana = float(base_aduana["importe"].sum()) + honor_aduana
         entry = {"aduana": str(aduana), "total": tot_aduana, "n_operaciones": int(len(base_aduana))}
         if es_ingreso:
             por_desc = base_aduana.groupby("descripcion")["importe"].sum().sort_values(ascending=False)
@@ -576,6 +583,9 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
             if otros_val:
                 entry["conceptos"].append({"nombre": "Otros conceptos",
                                            "pct": float(otros_val / tot_aduana) if tot_aduana else 0.0})
+            if honor_aduana:
+                entry["conceptos"].append({"nombre": "Honorarios AA",
+                                           "pct": float(honor_aduana / tot_aduana) if tot_aduana else 0.0})
         else:
             cr_aduana = (float(costos_ref_df.loc[costos_ref_df["aduana"] == aduana, "monto"].sum())
                         if not costos_ref_df.empty else 0.0)
@@ -754,13 +764,17 @@ if aduana_sel != "TODAS" and aduana_sel not in ADUANAS_DISPONIBLES:
     aduana_sel = st.session_state["aduana_filtro"] = "TODAS"
 
 if aduana_sel == "TODAS":
-    EM_F, REC_F, SUELDOS_F = EM, REC, sueldos_df
+    EM_F, REC_F, SUELDOS_F, HONOR_F = EM, REC, sueldos_df, honorarios_aa_df
 else:
     EM_F = EM[EM["aduana"] == aduana_sel]
     REC_F = REC[REC["aduana"] == aduana_sel]
     SUELDOS_F = sueldos_df[sueldos_df["aduana"] == aduana_sel]
+    HONOR_F = honorarios_aa_df[honorarios_aa_df["aduana"] == aduana_sel]
 
-TOT_EM_F = float(EM_F["importe"].sum())
+# Ingreso de la página "Ingresos" = Emitidas + Honorarios AA, misma fórmula
+# que ya se usaba en Utilidad Operativa (pedido 2026-11-05: "en la pestana
+# de ingresos debe mostrarme lo mismo, aun no toma honorarios aa").
+TOT_EM_F = float(EM_F["importe"].sum()) + float(HONOR_F["monto"].sum())
 TOT_REC_F = float(REC_F["importe"].sum())
 MARGEN_F = TOT_EM_F - TOT_REC_F
 MARGEN_PCT_F = MARGEN_F / TOT_EM_F if TOT_EM_F else None
@@ -797,7 +811,8 @@ _dash_payload = {
     "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
                               aduana_sel if aduana_sel != "TODAS" else None),
     "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
-                                aduana_sel if aduana_sel != "TODAS" else None),
+                                aduana_sel if aduana_sel != "TODAS" else None,
+                                honorarios_df=HONOR_F),
     "nomina": _nomina_payload(SUELDOS_F, TOT_REC_F),
     "tarjeta_credito": _tarjeta_payload(),
     "colores": {"azul": JOCS_AZUL, "verde": JOCS_VERDE, "neg": C_NEG, "margen": C_MARGEN, "ppto": "#9DBFE8"},
