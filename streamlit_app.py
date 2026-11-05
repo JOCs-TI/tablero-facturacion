@@ -366,11 +366,14 @@ def load_honorarios_aa(mes_num):
     """Pestaña 'Detalle' -- ya trae el nombre de la aduana directo (columna
     'NOMBRE ADUANA', no un código). Se filtra a mes_num (columna 'Mes'
     viene mezclada int/str en el archivo, por eso el cast a str antes de
-    comparar)."""
+    comparar). Solo se cuentan facturas con Estatus 'Timbrada'; las demás
+    (Emitida, Cancelada, Cobrada) no se consideran honorario devengado."""
     path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["honorarios_aa"]))
     df = pd.read_excel(path, sheet_name="Detalle", header=0)
     df.columns = [str(c).strip() for c in df.columns]
     df = df[df["Mes"].astype(str) == str(mes_num)].copy()
+    estatus = coalesce_col(df, "Estatus").map(norm_txt)
+    df = df[estatus.map(lambda s: isinstance(s, str) and s.strip().upper() == "TIMBRADA")]
     out = pd.DataFrame(index=df.index)
     out["aduana"] = coalesce_col(df, "NOMBRE ADUANA").map(norm_txt).map(
         _normaliza_aduana)
