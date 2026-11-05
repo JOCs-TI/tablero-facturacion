@@ -482,6 +482,7 @@ function UtilidadOperativaPage(props) {
   const kpiCards = [
     { nombre: "Ingresos", icono: "money", key: "ingreso", pkey: "ingresos", color: colores.azul },
     { nombre: "Costos de Referencia", icono: "target", key: "costos_referencia", pkey: "costos", color: colores.neg },
+    { nombre: "Sueldos", icono: "people", key: "sueldos", pkey: "sueldos", color: colores.ppto },
     { nombre: "Gastos Operativos", icono: "stack", key: "gastos_operativos", pkey: "gastos", color: colores.verde },
     { nombre: "Utilidad Operativa", icono: "trend", key: "utilidad", pkey: "utilidad", color: colores.margen },
   ].map((c) => {
@@ -510,7 +511,7 @@ function UtilidadOperativaPage(props) {
   const consolidadoTxt = `Utilidad consolidada: ${fmt(utilidadTotal)}` + (margenCons !== null ? ` · Margen ${pct(margenCons)}` : "");
 
   return h(React.Fragment, {},
-    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(4, 1fr)" } },
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(5, 1fr)" } },
       ...kpiCards.map((c, i) => h("div", { key: i, className: "stat-card" },
         h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS[c.icono]), h("div", { className: "stat-label" }, c.label)),
         h("div", { className: "stat-value" }, c.valor),
