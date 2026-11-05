@@ -131,6 +131,12 @@ def _descargar_sheet_drive(file_id):
 # cuentan dos veces (confirmado revisando el archivo de Julio, 2026-10-30).
 ALIAS_ADUANA_FACTURA = {"IMILE": "IMILE AIFA"}
 
+# Aduanas cuyas EMITIDAS vienen un mes atrasadas en el archivo mensual --
+# se excluyen del mes propio y se toman del archivo del mes siguiente (ver
+# load_emitidas_recibidas). TMM agregado 2026-11-05, misma regla que ya
+# tenia Imile AIFA.
+ADUANAS_DESFASE_EMITIDAS = {"IMILE AIFA", "TMM"}
+
 import unicodedata
 
 def _normaliza_aduana(s):
@@ -284,13 +290,16 @@ def load_emitidas_recibidas(periodo):
     for hoja, tipo in [("EMITIDAS", "EMITIDA"), ("RECIBIDAS", "RECIBIDA")]:
         d_mes = _leer_hoja_factura(path_mes, hoja, tipo)
         if tipo == "EMITIDA":
-            # Imile AIFA en EMITIDAS sigue viniendo un mes atrasada -- se
-            # excluye del mes actual y se toma del mes siguiente. Imile
-            # Laredo YA NO tiene ese desfase, se toma tal cual venga en el
-            # archivo del mes actual (confirmado con el usuario, 2026-10-30).
-            d_mes = d_mes[d_mes["aduana"] != "IMILE AIFA"]
+            # Imile AIFA y TMM en EMITIDAS siguen viniendo un mes atrasadas
+            # -- se excluyen del mes actual y se toman del mes siguiente
+            # (TMM confirmado con el usuario, 2026-11-05: "las emitidas que
+            # estan en agosto le pertenecen a julio y las de septiembre a
+            # agosto" -- misma regla que ya tenia Imile AIFA). Imile Laredo
+            # YA NO tiene ese desfase, se toma tal cual venga en el archivo
+            # del mes actual (confirmado con el usuario, 2026-10-30).
+            d_mes = d_mes[~d_mes["aduana"].isin(ADUANAS_DESFASE_EMITIDAS)]
             d_sig = _leer_hoja_factura(path_sig, hoja, tipo)
-            d_sig = d_sig[d_sig["aduana"] == "IMILE AIFA"]
+            d_sig = d_sig[d_sig["aduana"].isin(ADUANAS_DESFASE_EMITIDAS)]
             d = pd.concat([d_mes, d_sig], ignore_index=True)
         else:
             # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
