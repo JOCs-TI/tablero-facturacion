@@ -62,6 +62,30 @@ PERIODOS = {
         "corresponsalias": "1AF0CtzN6YXlOfcYIYB3VbppnuR86z9EfXbIha4deOD8",
         "corresponsalias_hoja": "CORRESPONSALÍAS",
     },
+    "junio": {
+        "mes_num": 6, "mes_txt": "Junio",
+        "emitidas_recibidas": "1n73ZvgejPFKctqHwmu5VD9YZeBCUwRttNP6HONeLycE",
+        "emitidas_recibidas_siguiente": "1XiYbkZ6AzZgyIy7mRKTt-KItpt8ULkXI792b4Sou8EU",  # Julio
+        "costos_de_referencia": "1LWp7qp82_IDR8T5HvKL6pHfbeM7K5NHu6_1syPLchhA",
+        "corresponsalias": "1hgWla6AYYh881yrzOWwpkGBKVhRHO4OPl9YLCSJ6Z5Y",
+        "corresponsalias_hoja": "Hoja 1",
+    },
+    "mayo": {
+        "mes_num": 5, "mes_txt": "Mayo",
+        "emitidas_recibidas": "1gcl0spdaFHTBRoLzxRERtOY2R3aEAb0QfbN8tD4DGW4",
+        "emitidas_recibidas_siguiente": "1n73ZvgejPFKctqHwmu5VD9YZeBCUwRttNP6HONeLycE",  # Junio
+        "costos_de_referencia": "1dhOKHzxHyx998mSn-Esmon1ak9emjohepExxMGe6fMY",
+        "corresponsalias": "1gpUBWWfxbQxW7iKW-lyqaegpGO-Wlaj2bZCTfYs8LaQ",
+        "corresponsalias_hoja": "Hoja 1",
+    },
+    "abril": {
+        "mes_num": 4, "mes_txt": "Abril",
+        "emitidas_recibidas": "1SZ9Cymny-V5AQSbk26xeGT299kcBmQ1TChS6s3CnfH4",
+        "emitidas_recibidas_siguiente": "1gcl0spdaFHTBRoLzxRERtOY2R3aEAb0QfbN8tD4DGW4",  # Mayo
+        "costos_de_referencia": "1SUw-lZ1HFKUTVbKVjSblC9cVQ5V-p0oTvYXqJNkd9Uw",
+        "corresponsalias": "1xl9rrzWuITKvv9xZmJupN5LAVfE8-pijGgd7qukyqAY",
+        "corresponsalias_hoja": "CORRECTA",
+    },
 }
 PERIODO_DEFAULT = "agosto"
 
@@ -170,11 +194,17 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     out["descripcion"] = coalesce_col(df, "descripcion").map(norm_txt)
     monto = pd.to_numeric(coalesce_col(df, "monto 1", "monto"), errors="coerce")
     out["importe"] = monto.fillna(0.0)
-    aduana = coalesce_col(df, "aduana").map(norm_txt)
+    # 'nombre' es fallback para meses donde Recibidas no trae columna
+    # 'aduana' (ej. Abril/Mayo 2026) -- ahi el nombre de aduana viene en una
+    # columna llamada 'Nombre' en su lugar, confirmado revisando la fuente.
+    aduana = coalesce_col(df, "aduana", "nombre").map(norm_txt)
     out["aduana"] = aduana.map(_normaliza_aduana)
     tipo_cc = coalesce_col(df, "tipo").map(norm_txt)
     out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
-    out["concepto_cierre"] = coalesce_col(df, "concepto para cierre", " ").map(norm_txt)
+    # 'conceptos para el cierre' es el mismo encabezado con otra redacción
+    # (Abril/Mayo 2026, en vez de 'concepto para cierre').
+    out["concepto_cierre"] = coalesce_col(
+        df, "concepto para cierre", "conceptos para el cierre", " ").map(norm_txt)
     out["cancelada"] = (out["aduana"] == "CANCELADA") | (out["tipo_cc"] == "CANCELADA")
     if tipo_factura == "RECIBIDA":
         # pandas convierte 'N/A' a NaN por default (igual que una celda vacia),
@@ -228,12 +258,22 @@ def _leer_corresponsalias(path, hoja):
     PERIODOS[...]['corresponsalias_hoja'])."""
     df = pd.read_excel(path, sheet_name=hoja, header=0)
     df.columns = [str(c).strip() for c in df.columns]
-    df = df[df["ADUANA"].isin(CORRESPONSALIAS_ADUANAS)]
+    # Normalizar ANTES de filtrar: algunos meses (Abril/Junio 2026) escriben
+    # la aduana en Mayúscula inicial o con acento ("Veracruz", "Lázaro") en
+    # vez de mayúsculas sin acento -- sin esto el filtro isin() no
+    # encontraba ninguna fila y Corresponsalías salía vacío para esos meses.
+    aduana_norm = coalesce_col(df, "ADUANA").map(norm_txt).map(_normaliza_aduana)
+    coinciden = aduana_norm.isin(CORRESPONSALIAS_ADUANAS)
+    df = df[coinciden]
+    aduana_norm = aduana_norm[coinciden]
     out = pd.DataFrame(index=df.index)
-    out["contraparte"] = df["Emisor.Attribute:Nombre"].map(norm_txt)
+    # 'NOMBRE'/'TOTAL' son fallback para Abril 2026, que nombra estas
+    # columnas distinto ('Emisor.Attribute:Nombre'/'Attribute:Total' en los
+    # demas meses).
+    out["contraparte"] = coalesce_col(df, "Emisor.Attribute:Nombre", "NOMBRE").map(norm_txt)
     out["descripcion"] = "Corresponsalía"
-    out["importe"] = pd.to_numeric(df["Attribute:Total"], errors="coerce").fillna(0.0)
-    out["aduana"] = df["ADUANA"].map(_normaliza_aduana)
+    out["importe"] = pd.to_numeric(coalesce_col(df, "Attribute:Total", "TOTAL"), errors="coerce").fillna(0.0)
+    out["aduana"] = aduana_norm
     out["tipo_cc"] = "PROPIOS"
     out["concepto_cierre"] = None
     out["cancelada"] = False
