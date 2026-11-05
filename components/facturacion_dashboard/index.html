@@ -482,8 +482,8 @@ function UtilidadOperativaPage(props) {
   const kpiCards = [
     { nombre: "Ingresos", icono: "money", key: "ingreso", pkey: "ingresos", color: colores.azul },
     { nombre: "Costos de Referencia", icono: "target", key: "costos_referencia", pkey: "costos", color: colores.neg },
-    { nombre: "Sueldos", icono: "people", key: "sueldos", pkey: "sueldos", color: colores.ppto },
     { nombre: "Gastos Operativos", icono: "stack", key: "gastos_operativos", pkey: "gastos", color: colores.verde },
+    { nombre: "Sueldos", icono: "people", key: "sueldos", pkey: "sueldos", color: colores.ppto },
     { nombre: "Utilidad Operativa", icono: "trend", key: "utilidad", pkey: "utilidad", color: colores.margen },
   ].map((c) => {
     const realVal = datos.por_aduana.reduce((s, a) => s + a[c.key], 0);
