@@ -193,6 +193,15 @@ ALIAS_ADUANA_FACTURA = {"IMILE": "IMILE AIFA"}
 # tenia Imile AIFA.
 ADUANAS_DESFASE_EMITIDAS = {"IMILE AIFA", "TMM"}
 
+# Excepciones puntuales al desfase de arriba, por periodo -- el desfase de
+# IMILE AIFA NO es uniforme mes a mes (confirmado con el usuario,
+# 2026-11-18, al ajustar Abril: "para cuadrar esto, Paco tiene que poner
+# como ingresos de IMILE AIFA [en Mayo] lo que aparezca en las emitidas de
+# MAYO con la aduana 'IMILE' el tipo 'PROPIOS' en la columna Monto 1" --
+# es decir, Mayo ya NO se desfasa, se queda con su propio archivo). No
+# asumir que aplica a otros meses sin que el usuario lo confirme.
+ADUANAS_SIN_DESFASE_POR_PERIODO = {"mayo": {"IMILE AIFA"}}
+
 import unicodedata
 
 def _normaliza_aduana(s):
@@ -405,14 +414,18 @@ def load_emitidas_recibidas(periodo):
             # estan en agosto le pertenecen a julio y las de septiembre a
             # agosto" -- misma regla que ya tenia Imile AIFA). Imile Laredo
             # YA NO tiene ese desfase, se toma tal cual venga en el archivo
-            # del mes actual (confirmado con el usuario, 2026-10-30).
-            d_mes = d_mes[~d_mes["aduana"].isin(ADUANAS_DESFASE_EMITIDAS)]
+            # del mes actual (confirmado con el usuario, 2026-10-30). El
+            # desfase de Imile AIFA no es uniforme mes a mes -- algunos
+            # periodos tienen su propia excepción (ver
+            # ADUANAS_SIN_DESFASE_POR_PERIODO / imile_monto2_desde).
+            desfase_este_periodo = ADUANAS_DESFASE_EMITIDAS - ADUANAS_SIN_DESFASE_POR_PERIODO.get(periodo, set())
+            d_mes = d_mes[~d_mes["aduana"].isin(desfase_este_periodo)]
             d_sig = _leer_hoja_factura(path_sig, hoja, tipo)
             # Si este periodo tiene su propia fuente de 'Monto 2' para IMILE
             # (ver 'imile_monto2_desde'), IMILE ya NO se toma del desfase
             # normal de 1 mes -- se reemplaza por esa fuente más abajo, para
             # no duplicarlo.
-            desfase_normal = ADUANAS_DESFASE_EMITIDAS - (
+            desfase_normal = desfase_este_periodo - (
                 {"IMILE AIFA"} if cfg.get("imile_monto2_desde") else set())
             d_sig = d_sig[d_sig["aduana"].isin(desfase_normal)]
             partes = [d_mes, d_sig]
