@@ -404,6 +404,53 @@ def _leer_efectivale(path, mes_txt):
     out["tipo_factura"] = "RECIBIDA"
     return out[out["importe"] != 0]
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cargar_emitidas_periodo(periodo):
+    """Solo la hoja EMITIDAS de un periodo, con sus reglas de desfase de
+    IMILE AIFA/TMM ya aplicadas -- separado de load_emitidas_recibidas
+    (2026-11-18) para poder reusarse en historial_ingresos sin tener que
+    descargar también Corresponsalías/Efectivale (que solo aplican a
+    Recibidas/Gastos)."""
+    cfg = PERIODOS[periodo]
+    path_mes = BytesIO(_descargar_sheet_drive(cfg["emitidas_recibidas"]))
+    path_sig = BytesIO(_descargar_sheet_drive(cfg["emitidas_recibidas_siguiente"]))
+    hoja, tipo = "EMITIDAS", "EMITIDA"
+    d_mes = _leer_hoja_factura(path_mes, hoja, tipo)
+    # Imile AIFA y TMM en EMITIDAS siguen viniendo un mes atrasadas -- se
+    # excluyen del mes actual y se toman del mes siguiente (TMM confirmado
+    # con el usuario, 2026-11-05: "las emitidas que estan en agosto le
+    # pertenecen a julio y las de septiembre a agosto" -- misma regla que
+    # ya tenia Imile AIFA). Imile Laredo YA NO tiene ese desfase, se toma
+    # tal cual venga en el archivo del mes actual (confirmado con el
+    # usuario, 2026-10-30). El desfase de Imile AIFA no es uniforme mes a
+    # mes -- algunos periodos tienen su propia excepción (ver
+    # ADUANAS_SIN_DESFASE_POR_PERIODO / imile_monto2_desde /
+    # imile_monto1_desde).
+    desfase_este_periodo = ADUANAS_DESFASE_EMITIDAS - ADUANAS_SIN_DESFASE_POR_PERIODO.get(periodo, set())
+    d_mes = d_mes[~d_mes["aduana"].isin(desfase_este_periodo)]
+    d_sig = _leer_hoja_factura(path_sig, hoja, tipo)
+    # Si este periodo tiene su propia fuente de IMILE desfasada 2 meses
+    # (Monto 2 o Monto 1, ver PERIODOS), IMILE ya NO se toma del desfase
+    # normal de 1 mes -- se reemplaza por esa fuente más abajo, para no
+    # duplicarlo.
+    tiene_fuente_imile_2meses = bool(cfg.get("imile_monto2_desde") or cfg.get("imile_monto1_desde"))
+    desfase_normal = desfase_este_periodo - (
+        {"IMILE AIFA"} if tiene_fuente_imile_2meses else set())
+    d_sig = d_sig[d_sig["aduana"].isin(desfase_normal)]
+    partes = [d_mes, d_sig]
+    if cfg.get("imile_monto2_desde"):
+        path_imile2 = BytesIO(_descargar_sheet_drive(cfg["imile_monto2_desde"]))
+        partes.append(_leer_imile_emitidas_monto2(path_imile2, hoja))
+    if cfg.get("imile_monto1_desde"):
+        path_imile1 = BytesIO(_descargar_sheet_drive(cfg["imile_monto1_desde"]))
+        d_imile1 = _leer_hoja_factura(path_imile1, hoja, tipo)
+        partes.append(d_imile1[d_imile1["aduana"] == "IMILE AIFA"])
+    d = pd.concat(partes, ignore_index=True)
+    d = d[~d["cancelada"]]
+    # A pedido del usuario (2026-10-28): "solo PROPIOS".
+    d = d[d["tipo_cc"] == "PROPIOS"]
+    return d.reset_index(drop=True)
+
 @st.cache_data(ttl=300, show_spinner="Cargando facturación...")
 def load_emitidas_recibidas(periodo):
     """'periodo' es una clave de PERIODOS (ej. 'agosto', 'julio') -- mismas
@@ -411,63 +458,51 @@ def load_emitidas_recibidas(periodo):
     PERIODOS). Parametrizado 2026-10-30 a pedido del usuario ("vamos a
     cargar julio con las mismas reglas que se uso para agosto")."""
     cfg = PERIODOS[periodo]
+    hoja, tipo = "RECIBIDAS", "RECIBIDA"
     path_mes = BytesIO(_descargar_sheet_drive(cfg["emitidas_recibidas"]))
     path_sig = BytesIO(_descargar_sheet_drive(cfg["emitidas_recibidas_siguiente"]))
-    resultado = {}
-    for hoja, tipo in [("EMITIDAS", "EMITIDA"), ("RECIBIDAS", "RECIBIDA")]:
-        d_mes = _leer_hoja_factura(path_mes, hoja, tipo)
-        if tipo == "EMITIDA":
-            # Imile AIFA y TMM en EMITIDAS siguen viniendo un mes atrasadas
-            # -- se excluyen del mes actual y se toman del mes siguiente
-            # (TMM confirmado con el usuario, 2026-11-05: "las emitidas que
-            # estan en agosto le pertenecen a julio y las de septiembre a
-            # agosto" -- misma regla que ya tenia Imile AIFA). Imile Laredo
-            # YA NO tiene ese desfase, se toma tal cual venga en el archivo
-            # del mes actual (confirmado con el usuario, 2026-10-30). El
-            # desfase de Imile AIFA no es uniforme mes a mes -- algunos
-            # periodos tienen su propia excepción (ver
-            # ADUANAS_SIN_DESFASE_POR_PERIODO / imile_monto2_desde /
-            # imile_monto1_desde).
-            desfase_este_periodo = ADUANAS_DESFASE_EMITIDAS - ADUANAS_SIN_DESFASE_POR_PERIODO.get(periodo, set())
-            d_mes = d_mes[~d_mes["aduana"].isin(desfase_este_periodo)]
-            d_sig = _leer_hoja_factura(path_sig, hoja, tipo)
-            # Si este periodo tiene su propia fuente de IMILE desfasada 2
-            # meses (Monto 2 o Monto 1, ver PERIODOS), IMILE ya NO se toma
-            # del desfase normal de 1 mes -- se reemplaza por esa fuente más
-            # abajo, para no duplicarlo.
-            tiene_fuente_imile_2meses = bool(cfg.get("imile_monto2_desde") or cfg.get("imile_monto1_desde"))
-            desfase_normal = desfase_este_periodo - (
-                {"IMILE AIFA"} if tiene_fuente_imile_2meses else set())
-            d_sig = d_sig[d_sig["aduana"].isin(desfase_normal)]
-            partes = [d_mes, d_sig]
-            if cfg.get("imile_monto2_desde"):
-                path_imile2 = BytesIO(_descargar_sheet_drive(cfg["imile_monto2_desde"]))
-                partes.append(_leer_imile_emitidas_monto2(path_imile2, hoja))
-            if cfg.get("imile_monto1_desde"):
-                path_imile1 = BytesIO(_descargar_sheet_drive(cfg["imile_monto1_desde"]))
-                d_imile1 = _leer_hoja_factura(path_imile1, hoja, tipo)
-                partes.append(d_imile1[d_imile1["aduana"] == "IMILE AIFA"])
-            d = pd.concat(partes, ignore_index=True)
-        else:
-            # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
-            # en el archivo del mes actual -- a diferencia de Emitidas, aqui
-            # NO se sustituyen desde el mes siguiente (confirmado con el
-            # usuario). KYA TI y Yatec si se completan con lo que caiga en
-            # el 'MONTO 2' del archivo del mes siguiente, que les pertenece
-            # a este periodo.
-            d_kya_sig = _leer_kya_yatec_monto2_mes_anterior(path_sig, hoja)
-            path_corr = BytesIO(_descargar_sheet_drive(cfg["corresponsalias"]))
-            d_corr = _leer_corresponsalias(path_corr, cfg["corresponsalias_hoja"])
-            path_efect = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["efectivale"]))
-            d_efect = _leer_efectivale(path_efect, cfg["mes_txt"])
-            d = pd.concat([d_mes, d_kya_sig, d_corr, d_efect], ignore_index=True)
-        d = d[~d["cancelada"]]
-        # A pedido del usuario (2026-10-28): "solo PROPIOS" -- aplica tanto en
-        # Emitidas como en Recibidas (corrigio la regla anterior, que dejaba
-        # TERCEROS/ACTIVO FIJO en Recibidas).
-        d = d[d["tipo_cc"] == "PROPIOS"]
-        resultado[tipo] = d.reset_index(drop=True)
-    return resultado["EMITIDA"], resultado["RECIBIDA"]
+    d_mes = _leer_hoja_factura(path_mes, hoja, tipo)
+    # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas en el
+    # archivo del mes actual -- a diferencia de Emitidas, aqui NO se
+    # sustituyen desde el mes siguiente (confirmado con el usuario). KYA TI
+    # y Yatec si se completan con lo que caiga en el 'MONTO 2' del archivo
+    # del mes siguiente, que les pertenece a este periodo.
+    d_kya_sig = _leer_kya_yatec_monto2_mes_anterior(path_sig, hoja)
+    path_corr = BytesIO(_descargar_sheet_drive(cfg["corresponsalias"]))
+    d_corr = _leer_corresponsalias(path_corr, cfg["corresponsalias_hoja"])
+    path_efect = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["efectivale"]))
+    d_efect = _leer_efectivale(path_efect, cfg["mes_txt"])
+    d = pd.concat([d_mes, d_kya_sig, d_corr, d_efect], ignore_index=True)
+    d = d[~d["cancelada"]]
+    # A pedido del usuario (2026-10-28): "solo PROPIOS" -- aplica tanto en
+    # Emitidas como en Recibidas (corrigio la regla anterior, que dejaba
+    # TERCEROS/ACTIVO FIJO en Recibidas).
+    d = d[d["tipo_cc"] == "PROPIOS"]
+    return _cargar_emitidas_periodo(periodo), d.reset_index(drop=True)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def historial_ingresos(aduana_filtro=None):
+    """Ingreso real (Emitidas + Honorarios AA) vs. Presupuesto de TODOS los
+    periodos ya cargados (ver PERIODOS), no solo el mes seleccionado --
+    pedido del usuario, 2026-11-18: 'sobre esta grafica de tendencia
+    quiero que se vean los demas meses, independientemente del año por el
+    que estamos filtrando'. Respeta el filtro de aduana del header, igual
+    que el resto de la página de Ingresos. Reusa _cargar_emitidas_periodo
+    (cacheada) y los archivos de Honorarios AA/Presupuesto (un solo
+    archivo para todos los meses, también cacheado) -- no vuelve a
+    descargar nada de Recibidas/Gastos."""
+    filas = []
+    for clave, cfg in sorted(PERIODOS.items(), key=lambda kv: kv[1]["mes_num"]):
+        emitidas = _cargar_emitidas_periodo(clave)
+        honor = load_honorarios_aa(cfg["mes_num"])
+        if aduana_filtro:
+            emitidas = emitidas[emitidas["aduana"] == aduana_filtro]
+            honor = honor[honor["aduana"] == aduana_filtro]
+        real = float(emitidas["importe"].sum()) + float(honor["monto"].sum())
+        ppto_mensual, _, _ = load_presupuesto(cfg["mes_num"])
+        ppto = _ppto_total(ppto_mensual, "ingresos", aduana_filtro)
+        filas.append({"mes": cfg["mes_txt"], "real": real, "ppto": ppto})
+    return filas
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_sueldos(mes_num):
@@ -751,6 +786,7 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
         "por_concepto_full": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_full.items()],
         "por_contraparte": [{"nombre": str(c), "monto": float(v)} for c, v in top10.items()],
         "cobertura_concepto": (float(cobertura) if not es_ingreso else None),
+        "historial": historial_ingresos(aduana_filtro) if es_ingreso else None,
     }
 
 def _construir_arbol_nomina(sueldos_f):
