@@ -527,7 +527,7 @@ def historial_gastos(aduana_filtro=None):
         ppto_mensual, _, _ = load_presupuesto(cfg["mes_num"])
         ppto = _ppto_total(ppto_mensual, "gastos", aduana_filtro)
         variacion = (real / ppto - 1) if ppto else 0.0
-        filas.append({"mes": cfg["mes_txt"], "real": real, "variacion": variacion})
+        filas.append({"mes": cfg["mes_txt"], "variacion": variacion})
     return filas
 
 @st.cache_data(ttl=300, show_spinner=False)

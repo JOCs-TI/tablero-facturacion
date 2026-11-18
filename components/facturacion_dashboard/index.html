@@ -540,27 +540,9 @@ function FlujoPage(props) {
   const colorReal = esIngreso ? colores.azul : colores.azul;
   const k = datos.kpis;
 
-  // 'datos.historial' trae {mes, real, ppto} (Ingresos) o {mes, real,
-  // variacion} (Gastos) de TODOS los periodos ya cargados, en orden
-  // cronológico (ver historial_ingresos/historial_gastos en Python) --
-  // de ahí se calculan "acumulado" (suma real desde Enero hasta el mes
-  // seleccionado, antes 'No disponible') y "vs. mes anterior" (variación
-  // % contra el mes inmediato anterior, antes también 'No disponible').
-  // Pedido del usuario, 2026-11-18: "esos cuadros también ya llenan los
-  // de información" -- ahora que hay histórico real de varios meses.
-  const tieneHistorial = Array.isArray(datos.historial) && datos.historial.length > 0;
-  const idxMesActual = tieneHistorial ? datos.historial.findIndex((f) => f.mes === datos.mes_txt) : -1;
-  const acumuladoReal = (tieneHistorial && idxMesActual >= 0)
-    ? datos.historial.slice(0, idxMesActual + 1).reduce((s, f) => s + f.real, 0) : null;
-  const realMesAnterior = (tieneHistorial && idxMesActual > 0) ? datos.historial[idxMesActual - 1].real : null;
-  const vsMesAnteriorPct = (realMesAnterior !== null && realMesAnterior !== 0)
-    ? (k.tot_mes / realMesAnterior - 1) : null;
-  const vsMesAnteriorTxt = vsMesAnteriorPct !== null
-    ? (vsMesAnteriorPct >= 0 ? "+" : "") + (vsMesAnteriorPct * 100).toFixed(1) + "%" : "No disponible";
-
   const kpiCards = [
     { icono: "money", label: `${etqSing} del mes`, valor: fmt(k.tot_mes), sub: datos.mes_txt },
-    { icono: "stack", label: `${etqSing} acumulado`, valor: acumuladoReal !== null ? fmt(acumuladoReal) : "No disponible" },
+    { icono: "stack", label: `${etqSing} acumulado`, valor: "No disponible" },
     { icono: "target", label: "Presupuesto del mes", valor: k.ppto_mes_tot ? fmt(k.ppto_mes_tot) : "No disponible",
       deltaTxt: k.cumplimiento !== null ? (k.cumplimiento * 100).toFixed(0) + "% de cumplimiento" : null,
       deltaPos: k.cumplimiento !== null ? k.cumplimiento >= 1 : null },
@@ -570,9 +552,7 @@ function FlujoPage(props) {
     { icono: "people", label: "Proveedores activos", valor: String(k.n_contrapartes) },
     { icono: "gauge", label: "Resultado operativo", valor: fmt(k.margen),
       deltaTxt: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, deltaPos: k.margen_pct >= 0 },
-    { icono: "trend", label: "Variación vs. mes anterior", valor: vsMesAnteriorTxt,
-      deltaTxt: vsMesAnteriorPct !== null ? "vs. " + datos.historial[idxMesActual - 1].mes : null,
-      deltaPos: vsMesAnteriorPct !== null ? vsMesAnteriorPct >= 0 : null },
+    { icono: "trend", label: "Variación vs. mes anterior", valor: "No disponible" },
   ];
 
   const nota = "1 de 12 meses cargados · se completa con más histórico";
@@ -586,6 +566,7 @@ function FlujoPage(props) {
   // historial_ingresos/historial_gastos) -- ya respeta el filtro de
   // Aduana del header. Ingresos manda {mes, real, ppto} por periodo;
   // Gastos manda {mes, variacion} (mismo pctMode de siempre, sin ppto).
+  const tieneHistorial = Array.isArray(datos.historial) && datos.historial.length > 0;
   const tendenciaCats = tieneHistorial ? datos.historial.map((f) => f.mes) : [datos.mes_txt];
   const tendenciaReal = tieneHistorial
     ? (esIngreso ? datos.historial.map((f) => f.real) : datos.historial.map((f) => f.variacion))
@@ -606,9 +587,7 @@ function FlujoPage(props) {
           h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(4, 1fr)" } },
             kpiCards.map((c, i) => h(StatCardInline, { key: i, c }))),
           h("div", { className: "grid-row", style: { gridTemplateColumns: "0.8fr 1.6fr 0.8fr" } },
-            h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.trend), h("div", { className: "stat-label" }, "Crecimiento vs. mes anterior")),
-              h("div", { className: "stat-value" }, vsMesAnteriorTxt),
-              vsMesAnteriorPct !== null ? h(Badge, { texto: "vs. " + datos.historial[idxMesActual - 1].mes, positivo: vsMesAnteriorPct >= 0 }) : null),
+            h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.trend), h("div", { className: "stat-label" }, "Crecimiento vs. mes anterior")), h("div", { className: "stat-value" }, "No disponible")),
             h(BarChartCard, { icono: "chart", titulo: "Evolución de ingresos", subtitulo: "Ingreso real vs. presupuesto mensual",
               categorias: [datos.mes_txt], real: [k.tot_mes], ppto: [k.ppto_mes_tot || 0],
               nombreReal: "Ingreso real", nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota }),
@@ -628,7 +607,7 @@ function FlujoPage(props) {
             kpiCards2.map((c, i) => h(StatCardInline, { key: i, c })))),
 
     h("p", { style: { fontSize: 12, color: "var(--sub)", margin: "0 0 16px" } },
-      "Comparativo contra el año anterior pendiente de cargar histórico de 2025."),
+      "Acumulado, comparativo contra el mes/año anterior y evolución mensual pendientes de cargar histórico real mes a mes (hoy solo hay un mes de datos reales en vivo)."),
 
     h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
       h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Tendencia de crecimiento" : "Tendencia de gasto",
