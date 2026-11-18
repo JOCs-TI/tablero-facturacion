@@ -224,6 +224,83 @@ def _normaliza_aduana(s):
     s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
     return ALIAS_ADUANA_FACTURA.get(s, s)
 
+def _normaliza_nombre(s):
+    if not isinstance(s, str):
+        return None
+    s = s.strip().upper()
+    return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+
+import re
+
+PERSONAL_CC_PATH = BASE / "personal_cc.xlsx"
+_RE_SI_HUBIERA = re.compile(r"\s*(\d+(?:\.\d+)?)\s*%\s*si\s*hubiera", re.IGNORECASE)
+
+def _parse_peso_cc(v):
+    """Una celda de 'personal por cc.xlsx' es un numero plano (aplica
+    siempre) o un texto 'NN% si hubiera' (aplica SOLO el mes en que esa
+    aduana tenga ingresos propios > 0 -- regla dada por el usuario,
+    2026-11-18, ejemplo con TMM). Cualquier otro texto (checar con X,
+    duplicado, baja, no lo conozco, 100% 2 meses...) no tiene regla todavia
+    -- se trata como 0 hasta que el usuario la de."""
+    if isinstance(v, (int, float)) and not pd.isna(v):
+        return float(v), False
+    if isinstance(v, str):
+        m = _RE_SI_HUBIERA.match(v)
+        if m:
+            return float(m.group(1)) / 100.0, True
+    return 0.0, False
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_personal_cc():
+    """'personal por cc.xlsx' (hoja 'imile aifa'): tabla que el usuario
+    agrego al proyecto (2026-11-18) para prorratear el sueldo de un
+    empleado entre varias aduanas en vez de una sola. Por ahora SOLO se usa
+    la columna TMM (primera regla que dio el usuario) -- el resto de
+    columnas (IMILE AIFA/LAREDO, MULTIADUANAS, ESTAFETA, OTROS) y las filas
+    con texto sin resolver quedan pendientes de reglas futuras."""
+    df = pd.read_excel(PERSONAL_CC_PATH, sheet_name="imile aifa", header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    nombre_col = df.columns[0]
+    out = pd.DataFrame(index=df.index)
+    out["nombre"] = df[nombre_col].map(_normaliza_nombre)
+    parsed = df["TMM"].map(_parse_peso_cc)
+    out["tmm_peso"] = parsed.map(lambda t: t[0])
+    out["tmm_condicional"] = parsed.map(lambda t: t[1])
+    out = out[out["nombre"].notna() & (out["tmm_peso"] > 0)]
+    return out.drop_duplicates("nombre", keep="first").reset_index(drop=True)
+
+def _prorratear_sueldos_tmm(sueldos_f, personal_cc_df, tmm_ingreso):
+    """Separa de cada empleado (y de cada componente de COLS_NOMINA, para
+    que la Ficha Tecnica de Nomina siga cuadrando) la fraccion de su sueldo
+    que 'personal por cc.xlsx' le asigna a TMM, restandola de su aduana
+    actual -- un peso condicional ('% si hubiera') solo se activa si TMM
+    tuvo Emitidas (ingreso propio) > 0 este mes. Regla dada por el usuario,
+    2026-11-18."""
+    if personal_cc_df.empty:
+        return sueldos_f
+    pesos = personal_cc_df.set_index("nombre")
+    cols_num = [c for c, _ in COLS_NOMINA]
+    filas = []
+    for _, fila in sueldos_f.iterrows():
+        peso = 0.0
+        if fila["nombre"] in pesos.index:
+            p = pesos.loc[fila["nombre"]]
+            if (not p["tmm_condicional"]) or tmm_ingreso > 0:
+                peso = float(p["tmm_peso"])
+        if peso > 0 and fila["aduana"] != "TMM":
+            fila_resto = fila.copy()
+            fila_resto["total"] = fila["total"] * (1 - peso)
+            fila_resto[cols_num] = fila[cols_num] * (1 - peso)
+            fila_tmm = fila.copy()
+            fila_tmm["aduana"] = "TMM"
+            fila_tmm["total"] = fila["total"] * peso
+            fila_tmm[cols_num] = fila[cols_num] * peso
+            filas.append(fila_resto)
+            filas.append(fila_tmm)
+        else:
+            filas.append(fila)
+    return pd.DataFrame(filas).reset_index(drop=True)
+
 def _leer_hoja_factura(path, hoja, tipo_factura):
     """Misma lógica de siempre para leer 'emitidas'/'recibidas': columna de
     monto oficial ya convertida a MXN ('monto 1' en recibidas, 'monto' en
@@ -720,6 +797,9 @@ MES_TXT = PERIODOS[periodo_sel]["mes_txt"]
 try:
     EM, REC = load_emitidas_recibidas(periodo_sel)
     sueldos_df = load_sueldos(MES_ACTUAL)
+    personal_cc_df = load_personal_cc()
+    tmm_ingreso_mes = float(EM.loc[EM["aduana"] == "TMM", "importe"].sum())
+    sueldos_df = _prorratear_sueldos_tmm(sueldos_df, personal_cc_df, tmm_ingreso_mes)
     costos_ref_df = load_costos_referencia(periodo_sel)
     honorarios_aa_df = load_honorarios_aa(MES_ACTUAL)
     ppto_mensual, ppto_acumulado, ppto_anual = load_presupuesto(MES_ACTUAL)
