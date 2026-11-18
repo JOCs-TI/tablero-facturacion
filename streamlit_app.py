@@ -451,12 +451,11 @@ def _cargar_emitidas_periodo(periodo):
     d = d[d["tipo_cc"] == "PROPIOS"]
     return d.reset_index(drop=True)
 
-@st.cache_data(ttl=300, show_spinner="Cargando facturación...")
-def load_emitidas_recibidas(periodo):
-    """'periodo' es una clave de PERIODOS (ej. 'agosto', 'julio') -- mismas
-    reglas para cualquier mes, solo cambian los archivos de origen (ver
-    PERIODOS). Parametrizado 2026-10-30 a pedido del usuario ("vamos a
-    cargar julio con las mismas reglas que se uso para agosto")."""
+@st.cache_data(ttl=300, show_spinner=False)
+def _cargar_recibidas_periodo(periodo):
+    """Solo la hoja RECIBIDAS de un periodo -- separado de
+    load_emitidas_recibidas (2026-11-18, mismo motivo que
+    _cargar_emitidas_periodo) para poder reusarse en historial_gastos."""
     cfg = PERIODOS[periodo]
     hoja, tipo = "RECIBIDAS", "RECIBIDA"
     path_mes = BytesIO(_descargar_sheet_drive(cfg["emitidas_recibidas"]))
@@ -478,7 +477,15 @@ def load_emitidas_recibidas(periodo):
     # Emitidas como en Recibidas (corrigio la regla anterior, que dejaba
     # TERCEROS/ACTIVO FIJO en Recibidas).
     d = d[d["tipo_cc"] == "PROPIOS"]
-    return _cargar_emitidas_periodo(periodo), d.reset_index(drop=True)
+    return d.reset_index(drop=True)
+
+@st.cache_data(ttl=300, show_spinner="Cargando facturación...")
+def load_emitidas_recibidas(periodo):
+    """'periodo' es una clave de PERIODOS (ej. 'agosto', 'julio') -- mismas
+    reglas para cualquier mes, solo cambian los archivos de origen (ver
+    PERIODOS). Parametrizado 2026-10-30 a pedido del usuario ("vamos a
+    cargar julio con las mismas reglas que se uso para agosto")."""
+    return _cargar_emitidas_periodo(periodo), _cargar_recibidas_periodo(periodo)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def historial_ingresos(aduana_filtro=None):
@@ -502,6 +509,25 @@ def historial_ingresos(aduana_filtro=None):
         ppto_mensual, _, _ = load_presupuesto(cfg["mes_num"])
         ppto = _ppto_total(ppto_mensual, "ingresos", aduana_filtro)
         filas.append({"mes": cfg["mes_txt"], "real": real, "ppto": ppto})
+    return filas
+
+@st.cache_data(ttl=300, show_spinner=False)
+def historial_gastos(aduana_filtro=None):
+    """Mismo concepto que historial_ingresos pero para 'Tendencia de
+    gasto' (pedido del usuario, 2026-11-18, "igual con este" sobre la
+    misma gráfica pero de Gastos): variación % de Gasto real (Recibidas)
+    vs. Presupuesto de TODOS los periodos ya cargados, respetando el
+    filtro de aduana."""
+    filas = []
+    for clave, cfg in sorted(PERIODOS.items(), key=lambda kv: kv[1]["mes_num"]):
+        recibidas = _cargar_recibidas_periodo(clave)
+        if aduana_filtro:
+            recibidas = recibidas[recibidas["aduana"] == aduana_filtro]
+        real = float(recibidas["importe"].sum())
+        ppto_mensual, _, _ = load_presupuesto(cfg["mes_num"])
+        ppto = _ppto_total(ppto_mensual, "gastos", aduana_filtro)
+        variacion = (real / ppto - 1) if ppto else 0.0
+        filas.append({"mes": cfg["mes_txt"], "variacion": variacion})
     return filas
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -786,7 +812,7 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
         "por_concepto_full": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_full.items()],
         "por_contraparte": [{"nombre": str(c), "monto": float(v)} for c, v in top10.items()],
         "cobertura_concepto": (float(cobertura) if not es_ingreso else None),
-        "historial": historial_ingresos(aduana_filtro) if es_ingreso else None,
+        "historial": historial_ingresos(aduana_filtro) if es_ingreso else historial_gastos(aduana_filtro),
     }
 
 def _construir_arbol_nomina(sueldos_f):

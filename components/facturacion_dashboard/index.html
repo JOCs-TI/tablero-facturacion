@@ -558,16 +558,22 @@ function FlujoPage(props) {
   const nota = "1 de 12 meses cargados · se completa con más histórico";
   const variacion = k.ppto_mes_tot ? k.tot_mes / k.ppto_mes_tot - 1 : 0;
 
-  // 'Tendencia de crecimiento' muestra TODOS los periodos ya cargados (no
-  // solo el mes seleccionado), pedido por el usuario 2026-11-18: "quiero
-  // que se vean los demas meses, independientemente del año por el que
-  // estamos filtrando". Viene de datos.historial (Python, historial_ingresos)
-  // -- ya respeta el filtro de Aduana del header. Solo aplica a Ingresos;
-  // Gastos sigue mostrando un solo mes (esIngreso === false no manda historial).
-  const tieneHistorial = esIngreso && Array.isArray(datos.historial) && datos.historial.length > 0;
+  // 'Tendencia de crecimiento'/'Tendencia de gasto' muestran TODOS los
+  // periodos ya cargados (no solo el mes seleccionado), pedido por el
+  // usuario 2026-11-18: "quiero que se vean los demas meses,
+  // independientemente del año por el que estamos filtrando" (Ingresos) e
+  // "igual con este" (Gastos). Viene de datos.historial (Python,
+  // historial_ingresos/historial_gastos) -- ya respeta el filtro de
+  // Aduana del header. Ingresos manda {mes, real, ppto} por periodo;
+  // Gastos manda {mes, variacion} (mismo pctMode de siempre, sin ppto).
+  const tieneHistorial = Array.isArray(datos.historial) && datos.historial.length > 0;
   const tendenciaCats = tieneHistorial ? datos.historial.map((f) => f.mes) : [datos.mes_txt];
-  const tendenciaReal = tieneHistorial ? datos.historial.map((f) => f.real) : (esIngreso ? [k.tot_mes] : [variacion]);
-  const tendenciaPpto = tieneHistorial ? datos.historial.map((f) => f.ppto) : (esIngreso ? [k.ppto_mes_tot || 0] : [0]);
+  const tendenciaReal = tieneHistorial
+    ? (esIngreso ? datos.historial.map((f) => f.real) : datos.historial.map((f) => f.variacion))
+    : (esIngreso ? [k.tot_mes] : [variacion]);
+  const tendenciaPpto = tieneHistorial
+    ? (esIngreso ? datos.historial.map((f) => f.ppto) : datos.historial.map(() => 0))
+    : (esIngreso ? [k.ppto_mes_tot || 0] : [0]);
   const notaTendencia = tieneHistorial
     ? `${datos.historial.length} de 12 meses cargados · se completa con más histórico`
     : nota;
