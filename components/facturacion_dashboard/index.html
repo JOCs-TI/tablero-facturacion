@@ -558,20 +558,6 @@ function FlujoPage(props) {
   const nota = "1 de 12 meses cargados · se completa con más histórico";
   const variacion = k.ppto_mes_tot ? k.tot_mes / k.ppto_mes_tot - 1 : 0;
 
-  // 'Tendencia de crecimiento' muestra TODOS los periodos ya cargados (no
-  // solo el mes seleccionado), pedido por el usuario 2026-11-18: "quiero
-  // que se vean los demas meses, independientemente del año por el que
-  // estamos filtrando". Viene de datos.historial (Python, historial_ingresos)
-  // -- ya respeta el filtro de Aduana del header. Solo aplica a Ingresos;
-  // Gastos sigue mostrando un solo mes (esIngreso === false no manda historial).
-  const tieneHistorial = esIngreso && Array.isArray(datos.historial) && datos.historial.length > 0;
-  const tendenciaCats = tieneHistorial ? datos.historial.map((f) => f.mes) : [datos.mes_txt];
-  const tendenciaReal = tieneHistorial ? datos.historial.map((f) => f.real) : (esIngreso ? [k.tot_mes] : [variacion]);
-  const tendenciaPpto = tieneHistorial ? datos.historial.map((f) => f.ppto) : (esIngreso ? [k.ppto_mes_tot || 0] : [0]);
-  const notaTendencia = tieneHistorial
-    ? `${datos.historial.length} de 12 meses cargados · se completa con más histórico`
-    : nota;
-
   const donaSerie = datos.por_concepto.map((c) => ({ concepto: c.concepto, monto: c.monto }));
   const filasTabla = datos.por_concepto_full.map((c) => ({ concepto: c.concepto, monto: c.monto }));
 
@@ -606,12 +592,12 @@ function FlujoPage(props) {
     h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
       h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Tendencia de crecimiento" : "Tendencia de gasto",
         subtitulo: esIngreso ? "Ingreso real vs. presupuesto mensual" : "Variación mensual del gasto real vs. presupuesto",
-        categorias: tendenciaCats, real: tendenciaReal, ppto: tendenciaPpto,
+        categorias: [datos.mes_txt], real: esIngreso ? [k.tot_mes] : [variacion], ppto: esIngreso ? [k.ppto_mes_tot || 0] : [0],
         nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
-        nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, pctMode: !esIngreso, nota: notaTendencia,
+        nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, pctMode: !esIngreso, nota,
         yDomain: esIngreso ? [0, 20000000] : undefined,
         yTicks: esIngreso ? [0, 5000000, 10000000, 15000000, 20000000] : undefined,
-        mostrarEtiquetas: !esIngreso && !tieneHistorial }),
+        mostrarEtiquetas: !esIngreso }),
       esIngreso
         ? h(ResumenAduanaIngresosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel })
         : h(ResumenAduanaGastosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel, tot: k.tot_mes })),
