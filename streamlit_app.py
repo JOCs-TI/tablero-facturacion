@@ -101,6 +101,15 @@ PERIODOS = {
         "costos_de_referencia": "1Lk_3keBA0df0T_9ADlOZEnbOIY4Br7FHbGHS211I8p8",
         "corresponsalias": "11xFlZFbbpFP0SrbVsY1GVQKHgLHchGLnx1cdg2KGFnw",
         "corresponsalias_hoja": "Marzo",
+        # Las Emitidas de IMILE de Marzo tampoco vienen en el archivo de
+        # Marzo ni en el de Abril -- aparecen en el archivo de Mayo (2 meses
+        # después), igual patrón que Abril/Junio pero aquí SÍ en la columna
+        # normal "Monto 1" (confirmado con el usuario, 2026-11-18, tras
+        # corregir que la regla de Mayo era en realidad para Marzo: "Mayo no
+        # se tenia que modificar, la modificacion era para Marzo, pero
+        # sacando de las emitidas de mayo"). Ver _leer_hoja_factura /
+        # load_emitidas_recibidas.
+        "imile_monto1_desde": "1gcl0spdaFHTBRoLzxRERtOY2R3aEAb0QfbN8tD4DGW4",  # Mayo
     },
     "febrero": {
         "mes_num": 2, "mes_txt": "Febrero",
@@ -194,13 +203,13 @@ ALIAS_ADUANA_FACTURA = {"IMILE": "IMILE AIFA"}
 ADUANAS_DESFASE_EMITIDAS = {"IMILE AIFA", "TMM"}
 
 # Excepciones puntuales al desfase de arriba, por periodo -- el desfase de
-# IMILE AIFA NO es uniforme mes a mes (confirmado con el usuario,
-# 2026-11-18, al ajustar Abril: "para cuadrar esto, Paco tiene que poner
-# como ingresos de IMILE AIFA [en Mayo] lo que aparezca en las emitidas de
-# MAYO con la aduana 'IMILE' el tipo 'PROPIOS' en la columna Monto 1" --
-# es decir, Mayo ya NO se desfasa, se queda con su propio archivo). No
-# asumir que aplica a otros meses sin que el usuario lo confirme.
-ADUANAS_SIN_DESFASE_POR_PERIODO = {"mayo": {"IMILE AIFA"}}
+# IMILE AIFA NO es uniforme mes a mes (ver 'imile_monto2_desde' /
+# 'imile_monto1_desde' en PERIODOS, para los meses donde viene desfasada 2
+# meses en vez de 1). Vacío por ahora -- no asumir que algún mes necesita
+# quedarse con su propio archivo sin que el usuario lo confirme
+# explícitamente (2026-11-18: se probó con Mayo por un malentendido y el
+# usuario corrigió que esa regla en realidad era para Marzo).
+ADUANAS_SIN_DESFASE_POR_PERIODO = {}
 
 import unicodedata
 
@@ -417,21 +426,27 @@ def load_emitidas_recibidas(periodo):
             # del mes actual (confirmado con el usuario, 2026-10-30). El
             # desfase de Imile AIFA no es uniforme mes a mes -- algunos
             # periodos tienen su propia excepción (ver
-            # ADUANAS_SIN_DESFASE_POR_PERIODO / imile_monto2_desde).
+            # ADUANAS_SIN_DESFASE_POR_PERIODO / imile_monto2_desde /
+            # imile_monto1_desde).
             desfase_este_periodo = ADUANAS_DESFASE_EMITIDAS - ADUANAS_SIN_DESFASE_POR_PERIODO.get(periodo, set())
             d_mes = d_mes[~d_mes["aduana"].isin(desfase_este_periodo)]
             d_sig = _leer_hoja_factura(path_sig, hoja, tipo)
-            # Si este periodo tiene su propia fuente de 'Monto 2' para IMILE
-            # (ver 'imile_monto2_desde'), IMILE ya NO se toma del desfase
-            # normal de 1 mes -- se reemplaza por esa fuente más abajo, para
-            # no duplicarlo.
+            # Si este periodo tiene su propia fuente de IMILE desfasada 2
+            # meses (Monto 2 o Monto 1, ver PERIODOS), IMILE ya NO se toma
+            # del desfase normal de 1 mes -- se reemplaza por esa fuente más
+            # abajo, para no duplicarlo.
+            tiene_fuente_imile_2meses = bool(cfg.get("imile_monto2_desde") or cfg.get("imile_monto1_desde"))
             desfase_normal = desfase_este_periodo - (
-                {"IMILE AIFA"} if cfg.get("imile_monto2_desde") else set())
+                {"IMILE AIFA"} if tiene_fuente_imile_2meses else set())
             d_sig = d_sig[d_sig["aduana"].isin(desfase_normal)]
             partes = [d_mes, d_sig]
             if cfg.get("imile_monto2_desde"):
-                path_imile = BytesIO(_descargar_sheet_drive(cfg["imile_monto2_desde"]))
-                partes.append(_leer_imile_emitidas_monto2(path_imile, hoja))
+                path_imile2 = BytesIO(_descargar_sheet_drive(cfg["imile_monto2_desde"]))
+                partes.append(_leer_imile_emitidas_monto2(path_imile2, hoja))
+            if cfg.get("imile_monto1_desde"):
+                path_imile1 = BytesIO(_descargar_sheet_drive(cfg["imile_monto1_desde"]))
+                d_imile1 = _leer_hoja_factura(path_imile1, hoja, tipo)
+                partes.append(d_imile1[d_imile1["aduana"] == "IMILE AIFA"])
             d = pd.concat(partes, ignore_index=True)
         else:
             # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
