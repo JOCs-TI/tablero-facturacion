@@ -566,11 +566,11 @@ function FlujoPage(props) {
       deltaPos: k.cumplimiento !== null ? k.cumplimiento >= 1 : null },
     { icono: "trend", label: "Presupuesto acumulado", valor: k.ppto_acum_tot ? fmt(k.ppto_acum_tot) : "No disponible" },
   ];
-  const kpiCards2 = esIngreso ? null : [
-    { icono: "people", label: "Proveedores activos", valor: String(k.n_contrapartes) },
+  const kpiCards2 = [
+    { icono: "people", label: `${etqContraparte} activos`, valor: String(k.n_contrapartes) },
     { icono: "gauge", label: "Resultado operativo", valor: fmt(k.margen),
       deltaTxt: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, deltaPos: k.margen_pct >= 0 },
-    { icono: "trend", label: "Variación vs. mes anterior", valor: vsMesAnteriorTxt,
+    { icono: "trend", label: esIngreso ? "Crecimiento vs. mes anterior" : "Variación vs. mes anterior", valor: vsMesAnteriorTxt,
       deltaTxt: vsMesAnteriorPct !== null ? "vs. " + datos.historial[idxMesActual - 1].mes : null,
       deltaPos: vsMesAnteriorPct !== null ? vsMesAnteriorPct >= 0 : null },
   ];
@@ -601,31 +601,14 @@ function FlujoPage(props) {
   const filasTabla = datos.por_concepto_full.map((c) => ({ concepto: c.concepto, monto: c.monto }));
 
   return h(React.Fragment, {},
-    esIngreso
-      ? h(React.Fragment, {},
-          h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(4, 1fr)" } },
-            kpiCards.map((c, i) => h(StatCardInline, { key: i, c }))),
-          h("div", { className: "grid-row", style: { gridTemplateColumns: "0.8fr 1.6fr 0.8fr" } },
-            h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.trend), h("div", { className: "stat-label" }, "Crecimiento vs. mes anterior")),
-              h("div", { className: "stat-value" }, vsMesAnteriorTxt),
-              vsMesAnteriorPct !== null ? h(Badge, { texto: "vs. " + datos.historial[idxMesActual - 1].mes, positivo: vsMesAnteriorPct >= 0 }) : null),
-            h(BarChartCard, { icono: "chart", titulo: "Evolución de ingresos", subtitulo: "Ingreso real vs. presupuesto mensual",
-              categorias: [datos.mes_txt], real: [k.tot_mes], ppto: [k.ppto_mes_tot || 0],
-              nombreReal: "Ingreso real", nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota }),
-            h("div", { className: "grid-row", style: { gridTemplateColumns: "1fr", margin: 0 } },
-              h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.people), h("div", { className: "stat-label" }, "Clientes activos")), h("div", { className: "stat-value" }, String(k.n_contrapartes))),
-              h("div", { className: "stat-card" }, h("div", { className: "stat-top" }, h("div", { className: "stat-icon" }, ICONOS.gauge), h("div", { className: "stat-label" }, "Resultado operativo")),
-                h("div", { className: "stat-value" }, k.margen >= 0 ? "Superávit" : "Déficit"),
-                h(Badge, { texto: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, positivo: k.margen_pct >= 0 })))))
-      : h(React.Fragment, {},
-          h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
-            h(BarChartCard, { icono: "chart", titulo: "Evolución de gastos", subtitulo: "Gasto real vs. presupuesto mensual",
-              categorias: [datos.mes_txt], real: [k.tot_mes], ppto: [k.ppto_mes_tot || 0],
-              nombreReal: "Gasto real", nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota }),
-            h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)", margin: 0 } },
-              kpiCards.map((c, i) => h(StatCardInline, { key: i, c })))),
-          h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(3, 1fr)" } },
-            kpiCards2.map((c, i) => h(StatCardInline, { key: i, c })))),
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
+      h(BarChartCard, { icono: "chart", titulo: `Evolución de ${etqTitulo.toLowerCase()}`, subtitulo: `${etqSing} real vs. presupuesto mensual`,
+        categorias: [datos.mes_txt], real: [k.tot_mes], ppto: [k.ppto_mes_tot || 0],
+        nombreReal: `${etqSing} real`, nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota }),
+      h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)", margin: 0 } },
+        kpiCards.map((c, i) => h(StatCardInline, { key: i, c })))),
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(3, 1fr)" } },
+      kpiCards2.map((c, i) => h(StatCardInline, { key: i, c }))),
 
     h("p", { style: { fontSize: 12, color: "var(--sub)", margin: "0 0 16px" } },
       "Comparativo contra el año anterior pendiente de cargar histórico de 2025."),
