@@ -86,6 +86,30 @@ PERIODOS = {
         "corresponsalias": "1xl9rrzWuITKvv9xZmJupN5LAVfE8-pijGgd7qukyqAY",
         "corresponsalias_hoja": "CORRECTA",
     },
+    "marzo": {
+        "mes_num": 3, "mes_txt": "Marzo",
+        "emitidas_recibidas": "1R3diXUYNwx8M1fOT5VH5jynTUzkgQW2aolRVKyL3104",
+        "emitidas_recibidas_siguiente": "1SZ9Cymny-V5AQSbk26xeGT299kcBmQ1TChS6s3CnfH4",  # Abril
+        "costos_de_referencia": "1Lk_3keBA0df0T_9ADlOZEnbOIY4Br7FHbGHS211I8p8",
+        "corresponsalias": "11xFlZFbbpFP0SrbVsY1GVQKHgLHchGLnx1cdg2KGFnw",
+        "corresponsalias_hoja": "Marzo",
+    },
+    "febrero": {
+        "mes_num": 2, "mes_txt": "Febrero",
+        "emitidas_recibidas": "1qwZBMIHX908ShtRp7qKg-RQtPJUUTMWsnALy7zDsihY",
+        "emitidas_recibidas_siguiente": "1R3diXUYNwx8M1fOT5VH5jynTUzkgQW2aolRVKyL3104",  # Marzo
+        "costos_de_referencia": "1UT2vN_KhnTc-SG6I9KGmwVm90COpDDdi6lk0e7c8fNQ",
+        "corresponsalias": "1R82f8gVSI8Pr3jCcjLocs4AwlHki4e6H6vbgEnRSLCs",
+        "corresponsalias_hoja": "Feb",
+    },
+    "enero": {
+        "mes_num": 1, "mes_txt": "Enero",
+        "emitidas_recibidas": "1lz93J8ApZu2fkxkTVa3QbJxlEfjvZ2i-hl6DO2WSoV4",
+        "emitidas_recibidas_siguiente": "1qwZBMIHX908ShtRp7qKg-RQtPJUUTMWsnALy7zDsihY",  # Febrero
+        "costos_de_referencia": "1c08JsbVLpET-xmfqNEi0U6Wg0MOkYFVHTcWvDm-DvnU",
+        "corresponsalias": "1etUvRfuKqhuBsUmBtowwPEk4CYoFzZYJqvIWkceqaEc",
+        "corresponsalias_hoja": "ENERO",
+    },
 }
 PERIODO_DEFAULT = "agosto"
 
@@ -197,14 +221,23 @@ def _leer_hoja_factura(path, hoja, tipo_factura):
     # 'nombre' es fallback para meses donde Recibidas no trae columna
     # 'aduana' (ej. Abril/Mayo 2026) -- ahi el nombre de aduana viene en una
     # columna llamada 'Nombre' en su lugar, confirmado revisando la fuente.
-    aduana = coalesce_col(df, "aduana", "nombre").map(norm_txt)
+    # 'cc' es el mismo caso para Recibidas de Enero 2026 (no trae ni
+    # 'aduana' ni 'nombre', solo 'cc').
+    aduana = coalesce_col(df, "aduana", "nombre", "cc").map(norm_txt)
     out["aduana"] = aduana.map(_normaliza_aduana)
-    tipo_cc = coalesce_col(df, "tipo").map(norm_txt)
+    # 'clasificación' es el mismo concepto que 'tipo' (PROPIOS/TERCEROS/
+    # DISCRECIONAL, mismos valores) con otro nombre -- Emitidas de Enero
+    # 2026 no trae columna 'tipo' en absoluto, solo 'clasificación'. Sin
+    # este fallback, el filtro de "solo PROPIOS" excluía el 100% de
+    # Emitidas de Enero (Ingresos caía a $0, quedaba solo Honorarios AA).
+    tipo_cc = coalesce_col(df, "tipo", "clasificación").map(norm_txt)
     out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
     # 'conceptos para el cierre' es el mismo encabezado con otra redacción
-    # (Abril/Mayo 2026, en vez de 'concepto para cierre').
+    # (Abril/Mayo 2026, en vez de 'concepto para cierre'). 'conceptos para
+    # cierre' (plural, sin 'el') es una 3ra variante de Febrero 2026.
     out["concepto_cierre"] = coalesce_col(
-        df, "concepto para cierre", "conceptos para el cierre", " ").map(norm_txt)
+        df, "concepto para cierre", "conceptos para el cierre",
+        "conceptos para cierre", " ").map(norm_txt)
     out["cancelada"] = (out["aduana"] == "CANCELADA") | (out["tipo_cc"] == "CANCELADA")
     if tipo_factura == "RECIBIDA":
         # pandas convierte 'N/A' a NaN por default (igual que una celda vacia),
@@ -262,17 +295,22 @@ def _leer_corresponsalias(path, hoja):
     # la aduana en Mayúscula inicial o con acento ("Veracruz", "Lázaro") en
     # vez de mayúsculas sin acento -- sin esto el filtro isin() no
     # encontraba ninguna fila y Corresponsalías salía vacío para esos meses.
-    aduana_norm = coalesce_col(df, "ADUANA").map(norm_txt).map(_normaliza_aduana)
+    # 'Aduana' (minúsculas excepto inicial) es la variante de Enero 2026.
+    aduana_norm = coalesce_col(df, "ADUANA", "Aduana").map(norm_txt).map(_normaliza_aduana)
     coinciden = aduana_norm.isin(CORRESPONSALIAS_ADUANAS)
     df = df[coinciden]
     aduana_norm = aduana_norm[coinciden]
     out = pd.DataFrame(index=df.index)
-    # 'NOMBRE'/'TOTAL' son fallback para Abril 2026, que nombra estas
-    # columnas distinto ('Emisor.Attribute:Nombre'/'Attribute:Total' en los
-    # demas meses).
-    out["contraparte"] = coalesce_col(df, "Emisor.Attribute:Nombre", "NOMBRE").map(norm_txt)
+    # 'NOMBRE'/'TOTAL' son fallback para Abril 2026. 'NombreEmisor'/'Monto'
+    # son la variante de Febrero 2026. 'Content.Emisor.Attribute:Nombre'/
+    # 'Content.Attribute:Total' son la variante de Marzo 2026 (mismo nombre
+    # base que el estándar, con prefijo 'Content.').
+    out["contraparte"] = coalesce_col(
+        df, "Emisor.Attribute:Nombre", "NOMBRE", "NombreEmisor",
+        "Content.Emisor.Attribute:Nombre").map(norm_txt)
     out["descripcion"] = "Corresponsalía"
-    out["importe"] = pd.to_numeric(coalesce_col(df, "Attribute:Total", "TOTAL"), errors="coerce").fillna(0.0)
+    out["importe"] = pd.to_numeric(coalesce_col(
+        df, "Attribute:Total", "TOTAL", "Monto", "Content.Attribute:Total"), errors="coerce").fillna(0.0)
     out["aduana"] = aduana_norm
     out["tipo_cc"] = "PROPIOS"
     out["concepto_cierre"] = None
