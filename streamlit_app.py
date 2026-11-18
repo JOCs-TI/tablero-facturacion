@@ -85,6 +85,14 @@ PERIODOS = {
         "costos_de_referencia": "1SUw-lZ1HFKUTVbKVjSblC9cVQ5V-p0oTvYXqJNkd9Uw",
         "corresponsalias": "1xl9rrzWuITKvv9xZmJupN5LAVfE8-pijGgd7qukyqAY",
         "corresponsalias_hoja": "CORRECTA",
+        # Las Emitidas de IMILE de Abril NO vienen ni en el archivo de Abril
+        # ni en el de Mayo -- aparecen en el archivo de Junio (2 meses
+        # después), en una columna aparte "Monto 2" (confirmado con el
+        # usuario, 2026-11-18: "solamente de la sucursal IMILE debe sacarse
+        # del archivo de emitidas y recibidas de Junio ... y son las que
+        # tengan como aduana 'IMILE' propios y que esten en la columna
+        # Monto 2"). Ver _leer_imile_emitidas_monto2 / load_emitidas_recibidas.
+        "imile_monto2_desde": "1n73ZvgejPFKctqHwmu5VD9YZeBCUwRttNP6HONeLycE",  # Junio
     },
     "marzo": {
         "mes_num": 3, "mes_txt": "Marzo",
@@ -279,6 +287,29 @@ def _leer_kya_yatec_monto2_mes_anterior(path, hoja):
     out["tipo_factura"] = "RECIBIDA"
     return out[out["importe"] != 0]
 
+def _leer_imile_emitidas_monto2(path, hoja):
+    """SOLO para las Emitidas de IMILE de Abril 2026: a diferencia del resto
+    de aduanas con desfase (que se toman del archivo del mes siguiente, en
+    la columna normal de monto), las de IMILE de Abril aparecen hasta el
+    archivo de Junio (2 meses después) y en una columna separada 'Monto 2'
+    -- confirmado con el usuario, 2026-11-18. Ver PERIODOS['abril']
+    ['imile_monto2_desde']."""
+    df = pd.read_excel(path, sheet_name=hoja, header=0)
+    df.columns = [str(c).strip().lower() for c in df.columns]
+    out = pd.DataFrame(index=df.index)
+    out["contraparte"] = coalesce_col(df, "receptornombre").map(norm_txt)
+    out["descripcion"] = coalesce_col(df, "descripcion").map(norm_txt)
+    out["importe"] = pd.to_numeric(coalesce_col(df, "monto 2"), errors="coerce").fillna(0.0)
+    aduana = coalesce_col(df, "aduana").map(norm_txt)
+    out["aduana"] = aduana.map(_normaliza_aduana)
+    tipo_cc = coalesce_col(df, "tipo", "clasificación").map(norm_txt)
+    out["tipo_cc"] = tipo_cc.map(lambda s: s.upper() if isinstance(s, str) else "SIN TIPO")
+    out["concepto_cierre"] = coalesce_col(df, "concepto para cierre", " ").map(norm_txt)
+    out["cancelada"] = (out["aduana"] == "CANCELADA") | (out["tipo_cc"] == "CANCELADA")
+    out["tipo_factura"] = "EMITIDA"
+    out = out[out["aduana"] == "IMILE AIFA"]  # "IMILE" ya normalizado al alias
+    return out[out["importe"] != 0]
+
 CORRESPONSALIAS_ADUANAS = {"VERACRUZ", "MANZANILLO", "LAZARO"}
 
 def _leer_corresponsalias(path, hoja):
@@ -377,8 +408,18 @@ def load_emitidas_recibidas(periodo):
             # del mes actual (confirmado con el usuario, 2026-10-30).
             d_mes = d_mes[~d_mes["aduana"].isin(ADUANAS_DESFASE_EMITIDAS)]
             d_sig = _leer_hoja_factura(path_sig, hoja, tipo)
-            d_sig = d_sig[d_sig["aduana"].isin(ADUANAS_DESFASE_EMITIDAS)]
-            d = pd.concat([d_mes, d_sig], ignore_index=True)
+            # Si este periodo tiene su propia fuente de 'Monto 2' para IMILE
+            # (ver 'imile_monto2_desde'), IMILE ya NO se toma del desfase
+            # normal de 1 mes -- se reemplaza por esa fuente más abajo, para
+            # no duplicarlo.
+            desfase_normal = ADUANAS_DESFASE_EMITIDAS - (
+                {"IMILE AIFA"} if cfg.get("imile_monto2_desde") else set())
+            d_sig = d_sig[d_sig["aduana"].isin(desfase_normal)]
+            partes = [d_mes, d_sig]
+            if cfg.get("imile_monto2_desde"):
+                path_imile = BytesIO(_descargar_sheet_drive(cfg["imile_monto2_desde"]))
+                partes.append(_leer_imile_emitidas_monto2(path_imile, hoja))
+            d = pd.concat(partes, ignore_index=True)
         else:
             # Las RECIBIDAS de Imile AIFA/Imile Laredo SI vienen correctas
             # en el archivo del mes actual -- a diferencia de Emitidas, aqui
