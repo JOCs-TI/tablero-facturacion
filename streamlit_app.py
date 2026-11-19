@@ -140,7 +140,16 @@ DRIVE_SHEET_IDS = {
     "amex_josefa": "1MQyjGwAHgRSMBJdZ_HFGskhplB2tk1JdDo2oY-6tzZ0",
     "amex_angelica": "1OewXOKinbq6cOxedrb6NIiaeF3385eCrbmzZFdtBM-0",
     "efectivale": "1NE0MG2qaY8k9uiSwRPviqXEfa9uIOezHsHGSg8KruNY",
+    "cierre_carga_aerea": "1D-j0uQqJ0fI3PF9xpFRoQn6XeyngZCRS_sKhEUgSIqU",
 }
+
+# Dos filas de la hoja 'sueldos' (Departamento=IMILE LAREDO) y del Sheet
+# 'cierre_carga_aerea' (pestaña Imile LAREDO) con nombres que NO son
+# empleados reales -- su monto coincide exacto con el de Sueldos que ya
+# trae el P&L aparte de Imile Laredo (ver load_imile_laredo_extra), serian
+# un duplicado si se contaran. El usuario confirmo excluirlos de Sueldos
+# por completo, en ambas fuentes (2026-11-19).
+EMPLEADOS_EXCLUIR_SUELDOS = {"PINEDA BERNAL ZUGELY", "GONZALEZ SAMANTHA"}
 
 CONCEPTO_PRESUPUESTO = {"INGRESOS": "ingresos", "CTO REF": "costos",
                         "SUELDOS": "sueldos", "GASTOS OP": "gastos"}
@@ -229,77 +238,6 @@ def _normaliza_nombre(s):
         return None
     s = s.strip().upper()
     return "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
-
-import re
-
-PERSONAL_CC_PATH = BASE / "personal_cc.xlsx"
-_RE_SI_HUBIERA = re.compile(r"\s*(\d+(?:\.\d+)?)\s*%\s*si\s*hubiera", re.IGNORECASE)
-
-def _parse_peso_cc(v):
-    """Una celda de 'personal por cc.xlsx' es un numero plano (aplica
-    siempre) o un texto 'NN% si hubiera' (aplica SOLO el mes en que esa
-    aduana tenga ingresos propios > 0 -- regla dada por el usuario,
-    2026-11-18, ejemplo con TMM). Cualquier otro texto (checar con X,
-    duplicado, baja, no lo conozco, 100% 2 meses...) no tiene regla todavia
-    -- se trata como 0 hasta que el usuario la de."""
-    if isinstance(v, (int, float)) and not pd.isna(v):
-        return float(v), False
-    if isinstance(v, str):
-        m = _RE_SI_HUBIERA.match(v)
-        if m:
-            return float(m.group(1)) / 100.0, True
-    return 0.0, False
-
-@st.cache_data(ttl=300, show_spinner=False)
-def load_personal_cc():
-    """'personal por cc.xlsx' (hoja 'imile aifa'): tabla que el usuario
-    agrego al proyecto (2026-11-18) para prorratear el sueldo de un
-    empleado entre varias aduanas en vez de una sola. Por ahora SOLO se usa
-    la columna TMM (primera regla que dio el usuario) -- el resto de
-    columnas (IMILE AIFA/LAREDO, MULTIADUANAS, ESTAFETA, OTROS) y las filas
-    con texto sin resolver quedan pendientes de reglas futuras."""
-    df = pd.read_excel(PERSONAL_CC_PATH, sheet_name="imile aifa", header=0)
-    df.columns = [str(c).strip() for c in df.columns]
-    nombre_col = df.columns[0]
-    out = pd.DataFrame(index=df.index)
-    out["nombre"] = df[nombre_col].map(_normaliza_nombre)
-    parsed = df["TMM"].map(_parse_peso_cc)
-    out["tmm_peso"] = parsed.map(lambda t: t[0])
-    out["tmm_condicional"] = parsed.map(lambda t: t[1])
-    out = out[out["nombre"].notna() & (out["tmm_peso"] > 0)]
-    return out.drop_duplicates("nombre", keep="first").reset_index(drop=True)
-
-def _prorratear_sueldos_tmm(sueldos_f, personal_cc_df, tmm_ingreso):
-    """Separa de cada empleado (y de cada componente de COLS_NOMINA, para
-    que la Ficha Tecnica de Nomina siga cuadrando) la fraccion de su sueldo
-    que 'personal por cc.xlsx' le asigna a TMM, restandola de su aduana
-    actual -- un peso condicional ('% si hubiera') solo se activa si TMM
-    tuvo Emitidas (ingreso propio) > 0 este mes. Regla dada por el usuario,
-    2026-11-18."""
-    if personal_cc_df.empty:
-        return sueldos_f
-    pesos = personal_cc_df.set_index("nombre")
-    cols_num = [c for c, _ in COLS_NOMINA]
-    filas = []
-    for _, fila in sueldos_f.iterrows():
-        peso = 0.0
-        if fila["nombre"] in pesos.index:
-            p = pesos.loc[fila["nombre"]]
-            if (not p["tmm_condicional"]) or tmm_ingreso > 0:
-                peso = float(p["tmm_peso"])
-        if peso > 0 and fila["aduana"] != "TMM":
-            fila_resto = fila.copy()
-            fila_resto["total"] = fila["total"] * (1 - peso)
-            fila_resto[cols_num] = fila[cols_num] * (1 - peso)
-            fila_tmm = fila.copy()
-            fila_tmm["aduana"] = "TMM"
-            fila_tmm["total"] = fila["total"] * peso
-            fila_tmm[cols_num] = fila[cols_num] * peso
-            filas.append(fila_resto)
-            filas.append(fila_tmm)
-        else:
-            filas.append(fila)
-    return pd.DataFrame(filas).reset_index(drop=True)
 
 def _leer_hoja_factura(path, hoja, tipo_factura):
     """Misma lógica de siempre para leer 'emitidas'/'recibidas': columna de
@@ -620,7 +558,116 @@ def load_sueldos(mes_num):
     for col_src, _ in COLS_NOMINA:
         out[col_src] = pd.to_numeric(coalesce_col(df, col_src), errors="coerce").fillna(0.0)
     out["total"] = pd.to_numeric(coalesce_col(df, "TOTAL2", "Total"), errors="coerce").fillna(0.0)
-    return out[out["nombre"].notna() & (out["total"] != 0)].reset_index(drop=True)
+    out = out[out["nombre"].notna() & (out["total"] != 0)]
+    excluir = out["nombre"].map(_normaliza_nombre).isin(EMPLEADOS_EXCLUIR_SUELDOS)
+    return out[~excluir].reset_index(drop=True)
+
+CIERRE_ADUANAS = ["FEDEX", "Veracruz", "CDMX", "Laredo", "Manzanillo", "Lazaro Cardenas",
+                   "Toluca BSO", "AIFA", "ESTAFETA", "Transito", "DHL", "iMile AIFA",
+                   "Imile LAREDO", "TMM", "Mexicali", "Tijuana", "Amazon 1", "Amazon 2", "STAFF"]
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_cierre_sueldos():
+    """Sheet 'CIERRE CARGA AEREA - 2026' compartido por el usuario
+    (2026-11-19): una pestaña por aduana, cada una con su propio bloque
+    SUELDOS -- una fila por empleado con el monto YA resuelto por mes (no
+    un porcentaje que haya que calcular). Es la fuente de verdad del
+    reparto real de cada persona entre aduanas: el usuario confirmo que el
+    split de una persona puede cambiar de mes a mes de forma no uniforme
+    (ej. 100% una aduana de enero a abril, 80/20 de mayo a agosto si entra
+    TMM, y puede volver a cambiar despues) -- no es modelable con una
+    formula tipo 'si hubiera' (asi se intento primero con personal_cc.xlsx,
+    que solo cubria TMM con un peso fijo); hay que leer el valor ya
+    resuelto tal cual, mes por mes. Reemplaza por completo ese enfoque
+    anterior.
+    Devuelve columnas: aduana, nombre, mes_num, monto."""
+    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["cierre_carga_aerea"]))
+    filas = []
+    for hoja in CIERRE_ADUANAS:
+        try:
+            df = pd.read_excel(path, sheet_name=hoja, header=None)
+        except Exception:
+            continue
+        mask_header = df.apply(lambda col: col.astype(str).str.strip().str.upper() == "SUELDOS")
+        filas_header = df.index[mask_header.any(axis=1)].tolist()
+        if not filas_header:
+            continue
+        header_idx = filas_header[0]
+        header_row = df.loc[header_idx]
+        col_nombre = header_row[header_row.astype(str).str.strip().str.upper() == "SUELDOS"].index[0]
+        cols_mes = {}
+        for mes_num, mes_txt in MES_COL_MAYUS.items():
+            coincide = header_row[header_row.astype(str).str.strip().str.upper() == mes_txt].index
+            if len(coincide):
+                cols_mes[mes_num] = coincide[0]
+        aduana_dest = ALIAS_ADUANA_PPTO.get(_normaliza_aduana(hoja), _normaliza_aduana(hoja))
+        for i in range(header_idx + 1, len(df)):
+            nombre_raw = df.loc[i, col_nombre]
+            if not isinstance(nombre_raw, str) or not nombre_raw.strip():
+                continue
+            if nombre_raw.strip().upper().startswith("TOTAL"):
+                break
+            nombre_norm = _normaliza_nombre(nombre_raw)
+            if nombre_norm in EMPLEADOS_EXCLUIR_SUELDOS:
+                continue
+            for mes_num, col in cols_mes.items():
+                monto = pd.to_numeric(df.loc[i, col], errors="coerce")
+                if pd.notna(monto) and monto != 0:
+                    filas.append({"aduana": aduana_dest, "nombre": nombre_norm,
+                                  "mes_num": mes_num, "monto": float(monto)})
+    return pd.DataFrame(filas, columns=["aduana", "nombre", "mes_num", "monto"])
+
+def _construir_sueldos_desde_cierre(sueldos_f, cierre_df, mes_num):
+    """Combina el detalle de load_sueldos() (9 componentes de la Ficha
+    Tecnica, por quincena) con el reparto por aduana de
+    load_cierre_sueldos() para el mes vigente: el monto de Cierre fija el
+    total real de cada (persona, aduana); los 9 componentes se escalan
+    proporcionalmente a la fraccion que ese monto representa del sueldo
+    completo de la persona ese mes (sumando sus quincenas). Un empleado
+    que SI esta en Sueldos pero NO aparece en ninguna hoja de Cierre para
+    este mes se deja con su Departamento de siempre, para no perderlo del
+    tablero."""
+    cierre_mes = cierre_df[cierre_df["mes_num"] == mes_num]
+    if cierre_mes.empty:
+        return sueldos_f
+    cols_num = [c for c, _ in COLS_NOMINA]
+    base = sueldos_f.copy()
+    base["nombre_norm"] = base["nombre"].map(_normaliza_nombre)
+    agg = {c: "sum" for c in cols_num}
+    agg["total"] = "sum"
+    agg["aduana"] = "first"
+    resumen = base.groupby("nombre_norm").agg(agg)
+
+    filas = []
+    for nombre_norm, grp in cierre_mes.groupby("nombre"):
+        if nombre_norm not in resumen.index:
+            continue
+        fila_base = resumen.loc[nombre_norm]
+        total_real = fila_base["total"]
+        if not total_real:
+            continue
+        # Si la suma de los montos de Cierre de esta persona (entre todas
+        # sus aduanas ese mes) supera su sueldo real completo -- posible
+        # inconsistencia entre las dos fuentes -- se escala hacia abajo
+        # para no inflar el total de Sueldos de la empresa.
+        suma_cierre = grp["monto"].sum()
+        escala = min(1.0, total_real / suma_cierre) if suma_cierre > total_real else 1.0
+        for _, r in grp.iterrows():
+            fraccion = (r["monto"] * escala) / total_real
+            fila = {"nombre": nombre_norm, "aduana": r["aduana"], "total": r["monto"] * escala}
+            for c in cols_num:
+                fila[c] = fila_base[c] * fraccion
+            filas.append(fila)
+
+    nombres_con_cierre = set(cierre_mes["nombre"])
+    for nombre_norm, fila_base in resumen.iterrows():
+        if nombre_norm in nombres_con_cierre:
+            continue
+        fila = {"nombre": nombre_norm, "aduana": fila_base["aduana"], "total": fila_base["total"]}
+        for c in cols_num:
+            fila[c] = fila_base[c]
+        filas.append(fila)
+    return pd.DataFrame(filas).reset_index(drop=True)
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_costos_referencia(periodo):
@@ -797,9 +844,8 @@ MES_TXT = PERIODOS[periodo_sel]["mes_txt"]
 try:
     EM, REC = load_emitidas_recibidas(periodo_sel)
     sueldos_df = load_sueldos(MES_ACTUAL)
-    personal_cc_df = load_personal_cc()
-    tmm_ingreso_mes = float(EM.loc[EM["aduana"] == "TMM", "importe"].sum())
-    sueldos_df = _prorratear_sueldos_tmm(sueldos_df, personal_cc_df, tmm_ingreso_mes)
+    cierre_sueldos_df = load_cierre_sueldos()
+    sueldos_df = _construir_sueldos_desde_cierre(sueldos_df, cierre_sueldos_df, MES_ACTUAL)
     costos_ref_df = load_costos_referencia(periodo_sel)
     honorarios_aa_df = load_honorarios_aa(MES_ACTUAL)
     ppto_mensual, ppto_acumulado, ppto_anual = load_presupuesto(MES_ACTUAL)
