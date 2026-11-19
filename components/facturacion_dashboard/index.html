@@ -206,48 +206,42 @@ function EmptyCard(props) {
     h("div", { className: "empty-state" }, props.mensaje));
 }
 
-function BarChartCard(props) {
-  const { icono, titulo, subtitulo, categorias, real, ppto, nombreReal, nombrePpto, colorReal, colorPpto, nota } = props;
-  const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i] }));
-  return h("div", { className: "card" },
-    h(CardHeader, { icono, titulo }),
-    h("p", { className: "card-subtitle" }, subtitulo),
-    h("div", { style: { height: 230 } },
-      h(ResponsiveContainer, { width: "100%", height: "100%" },
-        h(BarChart, { data, margin: { top: 6, right: 10, left: 0, bottom: 0 } },
-          h(CartesianGrid, { strokeDasharray: "3 3", vertical: false }),
-          h(XAxis, { dataKey: "cat", tick: { fontSize: 11, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
-          h(YAxis, { tickFormatter: fmt, tick: { fontSize: 10, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
-          h(Tooltip, { formatter: (v) => fmt(v) }),
-          h(Legend, { wrapperStyle: { fontSize: 12 } }),
-          h(Bar, { dataKey: "real", name: nombreReal, fill: colorReal, radius: [3, 3, 0, 0], maxBarSize: 46 }),
-          h(Bar, { dataKey: "ppto", name: nombrePpto, fill: colorPpto, radius: [3, 3, 0, 0], maxBarSize: 46 })
-        ))),
-    nota ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)", textAlign: "center" } }, nota) : null
-  );
-}
-
 function TendenciaTooltipCifras(props) {
-  const { active, payload, label, colorReal, colorPpto } = props;
+  // Mismo cuadro para Ingresos y Gastos (pedido por el usuario,
+  // 2026-11-18 vía WhatsApp: "la indicación que marca el cursor [en
+  // Gastos] se debe ver como el de ingresos"). En modo % (Gastos, pctMode)
+  // 'real' trae la VARIACION (lo que se grafica), no el monto -- el monto
+  // $ real viene aparte en payload[0].payload.monto (prop 'montoReal' de
+  // LineChartCard) para que se pueda ver el número, "no solo en
+  // porcentaje".
+  const { active, payload, label, colorReal, colorPpto, pctMode, nombreReal } = props;
   if (!active || !payload || !payload.length) return null;
   const real = payload.find((p) => p.dataKey === "real");
   const ppto = payload.find((p) => p.dataKey === "ppto");
-  const variacionPct = (real && ppto && ppto.value) ? (real.value / ppto.value - 1) : null;
+  const fila = payload[0] && payload[0].payload;
+  const monto = fila && typeof fila.monto === "number" ? fila.monto : null;
+  const variacionPct = pctMode
+    ? (real ? real.value : null)
+    : ((real && ppto && ppto.value) ? (real.value / ppto.value - 1) : null);
   return h("div", { style: {
     background: "#fff", border: "1px solid #E3E6EA", borderRadius: 8, padding: "10px 12px",
     boxShadow: "0 2px 8px rgba(0,0,0,0.12)", fontSize: 12,
   } },
     h("div", { style: { fontWeight: 700, marginBottom: 4 } }, label),
-    real ? h("div", { style: { color: colorReal } }, `${real.name} : ${fmt(real.value)}`) : null,
-    ppto ? h("div", { style: { color: colorPpto } }, `${ppto.name} : ${fmt(ppto.value)}`) : null,
+    pctMode
+      ? (monto !== null ? h("div", { style: { color: colorReal } }, `${nombreReal} : ${fmt(monto)}`) : null)
+      : [
+          real ? h("div", { key: "r", style: { color: colorReal } }, `${real.name} : ${fmt(real.value)}`) : null,
+          ppto ? h("div", { key: "p", style: { color: colorPpto } }, `${ppto.name} : ${fmt(ppto.value)}`) : null,
+        ],
     variacionPct !== null ? h("div", { style: { color: "#6B7280", marginTop: 4 } },
       `Variación vs. presupuesto : ${variacionPct >= 0 ? "+" : ""}${(variacionPct * 100).toFixed(1)}%`) : null);
 }
 
 function LineChartCard(props) {
-  const { icono, titulo, subtitulo, categorias, real, ppto, nombreReal, nombrePpto, colorReal, colorPpto, nota, pctMode, yDomain, yTicks, mostrarEtiquetas } = props;
+  const { icono, titulo, subtitulo, categorias, real, ppto, montoReal, nombreReal, nombrePpto, colorReal, colorPpto, nota, pctMode, yDomain, yTicks, mostrarEtiquetas } = props;
   const mostrarEtiq = mostrarEtiquetas !== false;
-  const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i] }));
+  const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i], monto: montoReal ? montoReal[i] : real[i] }));
   const fmtEje = pctMode ? ((v) => (v * 100).toFixed(2) + "%") : fmt;
   // Margen del eje proporcional al rango de los datos (12%) en vez de un
   // valor fijo -- un fijo pensado para porcentajes (ej. 0.02 = 2 puntos)
@@ -264,7 +258,14 @@ function LineChartCard(props) {
       h(ResponsiveContainer, { width: "100%", height: "100%" },
         h(LineChart, { data, margin: { top: 6, right: 10, left: 0, bottom: 0 } },
           h(CartesianGrid, { strokeDasharray: "3 3", vertical: false }),
-          h(XAxis, { dataKey: "cat", tick: { fontSize: 11, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" } }),
+          h(XAxis, {
+            // 'padding' (no el margin del LineChart) separa el primer/
+            // ultimo punto del borde del eje -- sin esto 'Enero' queda
+            // pegado encima de la linea del eje Y (reportado por el
+            // usuario, 2026-11-18).
+            dataKey: "cat", tick: { fontSize: 11, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" },
+            padding: { left: 16, right: 16 },
+          }),
           h(YAxis, {
             // Sin 'domain' explicito, Recharts usa el min/max exacto de los
             // datos como techo/piso del eje -- con una sola categoria y
@@ -276,9 +277,7 @@ function LineChartCard(props) {
             domain: yDomain || [(dataMin) => Math.min(dataMin, 0) - margenEje, (dataMax) => Math.max(dataMax, 0) + margenEje],
             ticks: yTicks || undefined,
           }),
-          h(Tooltip, pctMode
-            ? { formatter: (v) => fmtEje(v) }
-            : { content: (tp) => h(TendenciaTooltipCifras, { ...tp, colorReal, colorPpto }) }),
+          h(Tooltip, { content: (tp) => h(TendenciaTooltipCifras, { ...tp, colorReal, colorPpto, pctMode, nombreReal }) }),
           h(Legend, { wrapperStyle: { fontSize: 12 } }),
           h(Line, {
             type: "monotone", dataKey: "real", name: nombreReal, stroke: colorReal, strokeWidth: 3, dot: { r: 5 },
@@ -593,6 +592,15 @@ function FlujoPage(props) {
   const tendenciaPpto = tieneHistorial
     ? (esIngreso ? datos.historial.map((f) => f.ppto) : datos.historial.map(() => 0))
     : (esIngreso ? [k.ppto_mes_tot || 0] : [0]);
+  // Gastos grafica la VARIACION % en 'tendenciaReal' (para el trazo de la
+  // linea), pero el usuario pidio (2026-11-18, WhatsApp) poder ver tambien
+  // el monto $ real al pasar el cursor, no solo el porcentaje -- este
+  // array aparte lleva ese monto (Ingresos ya lo tiene en 'tendenciaReal'
+  // mismo, se repite aqui para que LineChartCard tenga una sola prop que
+  // leer sin importar el modo).
+  const tendenciaMonto = tieneHistorial
+    ? datos.historial.map((f) => f.real)
+    : [k.tot_mes];
   const notaTendencia = tieneHistorial
     ? `${datos.historial.length} de 12 meses cargados · se completa con más histórico`
     : nota;
@@ -601,12 +609,8 @@ function FlujoPage(props) {
   const filasTabla = datos.por_concepto_full.map((c) => ({ concepto: c.concepto, monto: c.monto }));
 
   return h(React.Fragment, {},
-    h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
-      h(BarChartCard, { icono: "chart", titulo: `Evolución de ${etqTitulo.toLowerCase()}`, subtitulo: `${etqSing} real vs. presupuesto mensual`,
-        categorias: [datos.mes_txt], real: [k.tot_mes], ppto: [k.ppto_mes_tot || 0],
-        nombreReal: `${etqSing} real`, nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota }),
-      h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)", margin: 0 } },
-        kpiCards.map((c, i) => h(StatCardInline, { key: i, c })))),
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(4, 1fr)" } },
+      kpiCards.map((c, i) => h(StatCardInline, { key: i, c }))),
     h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(3, 1fr)" } },
       kpiCards2.map((c, i) => h(StatCardInline, { key: i, c }))),
 
@@ -616,7 +620,7 @@ function FlujoPage(props) {
     h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
       h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Tendencia de crecimiento" : "Tendencia de gasto",
         subtitulo: esIngreso ? "Ingreso real vs. presupuesto mensual" : "Variación mensual del gasto real vs. presupuesto",
-        categorias: tendenciaCats, real: tendenciaReal, ppto: tendenciaPpto,
+        categorias: tendenciaCats, real: tendenciaReal, ppto: tendenciaPpto, montoReal: tendenciaMonto,
         nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
         nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, pctMode: !esIngreso, nota: notaTendencia,
         yDomain: esIngreso ? [0, 20000000] : undefined,
