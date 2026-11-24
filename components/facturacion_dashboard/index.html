@@ -611,8 +611,11 @@ function FlujoPage(props) {
         categorias: tendenciaCats, real: tendenciaReal, ppto: tendenciaPpto,
         nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
         nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota: notaTendencia,
-        yDomain: esIngreso ? [0, 20000000] : undefined,
-        yTicks: esIngreso ? [0, 5000000, 10000000, 15000000, 20000000] : undefined,
+        // Antes Ingresos tenia un rango fijo [0, 20M] pensado para "Todas"
+        // las aduanas -- al filtrar a una sola aduana, los montos reales
+        // quedaban chiquitos contra ese techo fijo y las lineas se veian
+        // "hasta el suelo" (reportado por el usuario, 2026-11-24). Ahora
+        // el eje es dinamico para ambas paginas, igual que ya era Gastos.
         mostrarEtiquetas: !tieneHistorial }),
       esIngreso
         ? h(ResumenAduanaIngresosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel })
