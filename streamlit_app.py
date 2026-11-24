@@ -557,10 +557,21 @@ def historial_gastos(aduana_filtro=None):
         ppto_mensual, _, _ = load_presupuesto(mes_num)
         ppto = _ppto_total(ppto_mensual, "gastos", aduana_filtro)
         if mes_num in mes_num_a_clave:
-            recibidas = _cargar_recibidas_periodo(mes_num_a_clave[mes_num])
+            clave = mes_num_a_clave[mes_num]
+            recibidas = _cargar_recibidas_periodo(clave)
+            # El gasto real no es solo Recibidas -- tambien Costos de
+            # Referencia y Sueldos de ese mes (pedido del usuario,
+            # 2026-11-24: "la pestana de gasto no esta sumando todo el
+            # gasto"). Corresponsalias/Efectivale ya vienen dentro de
+            # Recibidas (ver _cargar_recibidas_periodo).
+            costos = load_costos_referencia(clave)
+            sueldos = _construir_sueldos_desde_cierre(mes_num)
             if aduana_filtro:
                 recibidas = recibidas[recibidas["aduana"] == aduana_filtro]
-            real = float(recibidas["importe"].sum())
+                costos = costos[costos["aduana"] == aduana_filtro]
+                sueldos = sueldos[sueldos["aduana"] == aduana_filtro]
+            real = (float(recibidas["importe"].sum()) + float(costos["monto"].sum())
+                   + float(sueldos["total"].sum()))
             variacion = (real / ppto - 1) if ppto else 0.0
         else:
             real = None
@@ -901,7 +912,8 @@ cobertura_concepto = (REC.loc[REC["concepto_cierre"].notna(), "importe"].sum() /
 # reconstruye cuando el usuario las vuelva a dar. Las otras 4 páginas son
 # lectura directa de la fuente, sin fórmulas inventadas.
 # ══════════════════════════════════════════════════════════════════════════════
-def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_filtro=None, honorarios_df=None):
+def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_filtro=None,
+                   honorarios_df=None, costos_df=None, sueldos_df=None):
     if base_df.empty:
         return None
     ppto_key = "ingresos" if es_ingreso else "gastos"
@@ -909,7 +921,18 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
     honor_total = float(honorarios_df["monto"].sum()) if honorarios_df is not None else 0.0
     honor_ad = (honorarios_df.groupby("aduana")["monto"].sum()
                if honorarios_df is not None and not honorarios_df.empty else pd.Series(dtype=float))
-    tot_mes = float(base_df["importe"].sum()) + honor_total
+    # El gasto total del mes no es solo 'base_df' (Recibidas) -- tambien
+    # Costos de Referencia y Sueldos (Corresponsalias/Efectivale ya vienen
+    # dentro de Recibidas, ver _cargar_recibidas_periodo). Antes faltaban
+    # los dos y el total de Gastos salia incompleto (pedido del usuario,
+    # 2026-11-24).
+    costos_total = float(costos_df["monto"].sum()) if costos_df is not None else 0.0
+    sueldos_total = float(sueldos_df["total"].sum()) if sueldos_df is not None else 0.0
+    costos_ad = (costos_df.groupby("aduana")["monto"].sum()
+                if costos_df is not None and not costos_df.empty else pd.Series(dtype=float))
+    sueldos_ad = (sueldos_df.groupby("aduana")["total"].sum()
+                 if sueldos_df is not None and not sueldos_df.empty else pd.Series(dtype=float))
+    tot_mes = float(base_df["importe"].sum()) + honor_total + costos_total + sueldos_total
     ppto_mes_tot = _ppto_total(ppto_mensual, ppto_key, aduana_filtro) if tiene_ppto else None
     ppto_acum_tot = _ppto_total(ppto_acumulado, ppto_key, aduana_filtro) if tiene_ppto else None
     n_contrapartes = int(base_df.loc[base_df["importe"] != 0, "contraparte"].nunique())
@@ -932,11 +955,17 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
         top10 = pd.concat([top10, pd.Series({"Otros": por_contraparte_full.iloc[10:].sum()})])
 
     por_aduana = []
-    aduanas_todas = sorted(set(base_df["aduana"].dropna().unique().tolist()) | set(honor_ad.index))
+    aduanas_todas = sorted(set(base_df["aduana"].dropna().unique().tolist()) | set(honor_ad.index)
+                          | set(costos_ad.index) | set(sueldos_ad.index))
     for aduana in aduanas_todas:
         base_aduana = base_df[base_df["aduana"] == aduana]
         honor_aduana = float(honor_ad.get(aduana, 0.0))
-        tot_aduana = float(base_aduana["importe"].sum()) + honor_aduana
+        if es_ingreso:
+            tot_aduana = float(base_aduana["importe"].sum()) + honor_aduana
+        else:
+            cr_aduana = float(costos_ad.get(aduana, 0.0))
+            sueldos_aduana = float(sueldos_ad.get(aduana, 0.0))
+            tot_aduana = float(base_aduana["importe"].sum()) + cr_aduana + sueldos_aduana
         entry = {"aduana": str(aduana), "total": tot_aduana, "n_operaciones": int(len(base_aduana))}
         if es_ingreso:
             entry["emitidas"] = float(base_aduana["importe"].sum())
@@ -953,10 +982,9 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
                 entry["conceptos"].append({"nombre": "Honorarios AA",
                                            "pct": float(honor_aduana / tot_aduana) if tot_aduana else 0.0})
         else:
-            cr_aduana = (float(costos_ref_df.loc[costos_ref_df["aduana"] == aduana, "monto"].sum())
-                        if not costos_ref_df.empty else 0.0)
             entry["costos_referencia"] = cr_aduana
             entry["costos_referencia_pct"] = float(cr_aduana / tot_aduana) if tot_aduana else 0.0
+            entry["sueldos"] = sueldos_aduana
         por_aduana.append(entry)
 
     cumplimiento = tot_mes / ppto_mes_tot if ppto_mes_tot else None
@@ -964,7 +992,12 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
         "tiene_ppto": tiene_ppto, "mes_txt": MES_TXT,
         "kpis": {"tot_mes": tot_mes, "ppto_mes_tot": ppto_mes_tot, "ppto_acum_tot": ppto_acum_tot,
                 "n_contrapartes": n_contrapartes, "cumplimiento": cumplimiento,
-                "margen": margen, "margen_pct": margen_pct},
+                "margen": margen, "margen_pct": margen_pct,
+                # "Emitidas propias" (Ingresos) / "Recibidas propias" (Gastos)
+                # -- el monto base sin Honorarios/Costos/Sueldos, para el 2o.
+                # % del cuadro de Principales clientes/proveedores (pedido
+                # del usuario, 2026-11-24).
+                "tot_propias": float(base_df["importe"].sum())},
         "por_aduana": por_aduana,
         "por_concepto": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_dona.items()],
         "por_concepto_full": [{"concepto": str(c), "monto": float(v)} for c, v in por_concepto_full.items()],
@@ -1151,19 +1184,26 @@ if aduana_sel != "TODAS" and aduana_sel not in ADUANAS_DISPONIBLES:
     aduana_sel = st.session_state["aduana_filtro"] = "TODAS"
 
 if aduana_sel == "TODAS":
-    EM_F, REC_F, SUELDOS_F, HONOR_F = EM, REC, sueldos_df, honorarios_aa_df
+    EM_F, REC_F, SUELDOS_F, HONOR_F, COSTOS_F = EM, REC, sueldos_df, honorarios_aa_df, costos_ref_df
 else:
     EM_F = EM[EM["aduana"] == aduana_sel]
     REC_F = REC[REC["aduana"] == aduana_sel]
     SUELDOS_F = sueldos_df[sueldos_df["aduana"] == aduana_sel]
     HONOR_F = honorarios_aa_df[honorarios_aa_df["aduana"] == aduana_sel]
+    COSTOS_F = costos_ref_df[costos_ref_df["aduana"] == aduana_sel]
 
 # Ingreso de la página "Ingresos" = Emitidas + Honorarios AA, misma fórmula
 # que ya se usaba en Utilidad Operativa (pedido 2026-11-05: "en la pestana
 # de ingresos debe mostrarme lo mismo, aun no toma honorarios aa").
 TOT_EM_F = float(EM_F["importe"].sum()) + float(HONOR_F["monto"].sum())
 TOT_REC_F = float(REC_F["importe"].sum())
-MARGEN_F = TOT_EM_F - TOT_REC_F
+# La tarjeta compartida "Utilidad operativa" (antes "Resultado operativo")
+# debe mostrar la Utilidad Operativa real de la(s) aduana(s) filtrada(s) --
+# misma fórmula que Utilidad Operativa (Ingreso - Sueldos - Gastos - Costos
+# de Referencia), no solo Emitidas - Recibidas (antes le faltaban Sueldos y
+# Costos de Referencia; pedido del usuario, 2026-11-24: "así debe llamarse,
+# utilidad operativa").
+MARGEN_F = TOT_EM_F - TOT_REC_F - float(SUELDOS_F["total"].sum()) - float(COSTOS_F["monto"].sum())
 MARGEN_PCT_F = MARGEN_F / TOT_EM_F if TOT_EM_F else None
 COBERTURA_F = (REC_F.loc[REC_F["concepto_cierre"].notna(), "importe"].sum() / TOT_REC_F) if TOT_REC_F else 0.0
 
@@ -1196,7 +1236,8 @@ _dash_payload = {
     "periodos_disponibles": PERIODOS_DISPONIBLES,
     "utilidad_operativa": _uo_payload(periodo_sel),
     "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
-                              aduana_sel if aduana_sel != "TODAS" else None),
+                              aduana_sel if aduana_sel != "TODAS" else None,
+                              costos_df=COSTOS_F, sueldos_df=SUELDOS_F),
     "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
                                 aduana_sel if aduana_sel != "TODAS" else None,
                                 honorarios_df=HONOR_F),

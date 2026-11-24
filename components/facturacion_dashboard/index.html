@@ -62,7 +62,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); font-family: 'Segoe U
 .rank-bar-track { flex: 1; background: #EEF0F3; border-radius: 4px; height: 11px; }
 .rank-bar-fill { height: 100%; border-radius: 4px; }
 .rank-val { width: 92px; text-align: right; font-size: 11.5px; color: var(--text); font-weight: 600; flex-shrink: 0; }
-.rank-pct { width: 46px; text-align: right; font-size: 12px; color: var(--text); font-weight: 700; flex-shrink: 0; }
+.rank-pct { width: 58px; text-align: right; font-size: 12px; color: var(--text); font-weight: 700; flex-shrink: 0; line-height: 1.2; }
 .empty-state { display: flex; align-items: center; justify-content: center; color: var(--sub); font-size: 13px; text-align: center; padding: 30px 20px; height: 100%; }
 .conc-row { display: flex; gap: 14px; margin-top: 12px; }
 .conc-item { flex: 1; text-align: center; }
@@ -154,6 +154,15 @@ function fmt(v) {
 function pct(v) {
   if (v === null || v === undefined || Number.isNaN(v)) return "—";
   return (v >= 0 ? "+" : "") + (v * 100).toFixed(1) + "%";
+}
+function pctSimple(v) {
+  // Igual que pct() pero sin el signo "+" -- para porcentajes de
+  // composicion (participacion, concentracion) que nunca son una
+  // variacion y por lo tanto nunca deberian llevar signo (pedido del
+  // usuario, 2026-11-24: "los signos de + se tienen que quitar de los
+  // porcentajes que conforman").
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  return (v * 100).toFixed(1) + "%";
 }
 
 /* ── Piezas basicas (iguales a las tarjetas HTML que ya se usaban, ahora */
@@ -290,59 +299,63 @@ function DonutDetalleCard(props) {
     h(CardHeader, { icono: "chart", titulo }),
     h("p", { className: "card-subtitle" }, subtitulo),
     h("div", { className: "donut-detalle-row", style: { display: "flex", gap: 14, alignItems: "center", flex: 1 } },
-      h("div", { style: { flex: "0 0 38%", position: "relative" } },
-        h("div", { style: { height: 260 } },
+      h("div", { style: { flex: "0 0 46%", position: "relative" } },
+        h("div", { style: { height: 280 } },
           h(ResponsiveContainer, { width: "100%", height: "100%" },
             h(PieChart, {},
-              h(Pie, { data, dataKey: "valor", nameKey: "nombre", innerRadius: 58, outerRadius: 100, paddingAngle: 1 },
+              h(Pie, { data, dataKey: "valor", nameKey: "nombre", innerRadius: 64, outerRadius: 112, paddingAngle: 1 },
                 data.map((d, i) => h(Cell, { key: i, fill: d.color, stroke: "#fff", strokeWidth: 2 }))),
               h(Tooltip, { formatter: (v) => fmt(v) })))),
-        h("div", { style: { position: "absolute", top: "130px", left: "50%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" } },
+        h("div", { style: { position: "absolute", top: "140px", left: "50%", transform: "translate(-50%,-50%)", textAlign: "center", pointerEvents: "none" } },
           h("div", { style: { fontSize: 17, fontWeight: 800, color: "var(--azul)" } }, totalTxt),
           h("div", { style: { fontSize: 11.5, color: "var(--sub)" } }, subtotalTxt))),
       h("div", { style: { flex: 1, minWidth: 0, maxHeight: 300, overflowY: "auto", overflowX: "auto" } },
-        h("table", { className: "dtable", style: { minWidth: 420, fontSize: 13.5 } },
+        h("table", { className: "dtable", style: { minWidth: 260, fontSize: 13.5 } },
           h("tbody", {},
             h("tr", {}, h("th", {}, tituloCol1), h("th", { className: "num" }, "Monto actual"),
-                       h("th", { className: "num" }, "% Part."), h("th", { className: "num" }, "Monto anterior"),
-                       h("th", { className: "num" }, "Var. $"), h("th", { className: "num" }, "Var. %")),
+                       h("th", { className: "num" }, "% Part.")),
             filasTabla.map((f, i) => h("tr", { key: i },
               h("td", {}, f.concepto), h("td", { className: "num" }, fmt(f.monto)),
-              h("td", { className: "num" }, pct(f.monto / totTabla)),
-              h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
-              h("td", { className: "num", style: { color: "var(--sub)" } }, "—"),
-              h("td", { className: "num", style: { color: "var(--sub)" } }, "—"))),
+              h("td", { className: "num" }, pctSimple(f.monto / totTabla)))),
             h("tr", {}, h("td", {}, "Total"), h("td", { className: "num" }, fmt(totTabla)),
-                       h("td", { className: "num" }, "100%"), h("td", { className: "num" }, "—"),
-                       h("td", { className: "num" }, "—"), h("td", { className: "num" }, "—"))
+                       h("td", { className: "num" }, "100%"))
           )))));
 }
 
 function RankingConcentracionCard(props) {
-  const { titulo, subtitulo, badge, items, color, etqContraparte, etqContraparteSing } = props;
-  const tot = items.reduce((s, d) => s + d.monto, 0) || 1;
+  const { titulo, subtitulo, badge, items, color, etqContraparte, etqContraparteSing,
+         totGeneral, totPropias, etqColTotal, etqColPropias } = props;
+  const totItems = items.reduce((s, d) => s + d.monto, 0) || 1;
   const maxv = Math.max(...items.map((d) => d.monto), 1);
   const ordenado = [...items].sort((a, b) => b.monto - a.monto);
-  const top5 = ordenado.slice(0, 5).reduce((s, d) => s + d.monto, 0) / tot;
-  const top10 = ordenado.slice(0, 10).reduce((s, d) => s + d.monto, 0) / tot;
-  const principal = ordenado.length ? ordenado[0].monto / tot : 0;
+  const top5 = ordenado.slice(0, 5).reduce((s, d) => s + d.monto, 0) / totItems;
+  const top10 = ordenado.slice(0, 10).reduce((s, d) => s + d.monto, 0) / totItems;
+  const principal = ordenado.length ? ordenado[0].monto / totItems : 0;
   return h("div", { className: "card" },
     h(CardHeader, { icono: "people", titulo, badge }),
     h("p", { className: "card-subtitle" }, subtitulo),
+    h("div", { className: "rank-row", style: { fontSize: 11, fontWeight: 700, color: "var(--sub)" } },
+      h("div", { className: "rank-num" }),
+      h("div", { className: "rank-name" }, etqContraparteSing),
+      h("div", { className: "rank-bar-track", style: { background: "transparent" } }),
+      h("div", { className: "rank-val" }, "Monto"),
+      h("div", { className: "rank-pct" }, etqColTotal),
+      h("div", { className: "rank-pct" }, etqColPropias)),
     items.map((it, i) => h("div", { className: "rank-row", key: i },
       h("div", { className: "rank-num" }, i + 1),
       h("div", { className: "rank-name", title: it.nombre }, it.nombre),
       h("div", { className: "rank-bar-track" }, h("div", { className: "rank-bar-fill", style: { width: (it.monto / maxv * 100) + "%", background: color } })),
       h("div", { className: "rank-val" }, fmt(it.monto)),
-      h("div", { className: "rank-pct" }, (it.monto / tot * 100).toFixed(1) + "%"))),
+      h("div", { className: "rank-pct" }, totGeneral ? pctSimple(it.monto / totGeneral) : "—"),
+      h("div", { className: "rank-pct" }, totPropias ? pctSimple(it.monto / totPropias) : "—"))),
     h("div", { style: { borderTop: "1px solid var(--border)", marginTop: 6, paddingTop: 12 } },
       h("div", { className: "card-header", style: { marginBottom: 0 } },
         h("div", { className: "card-icon" }, ICONOS.trophy),
         h("p", { className: "card-title", style: { fontSize: 13 } }, "Concentración")),
       h("div", { className: "conc-row" },
-        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, "Top 5 " + etqContraparte.toLowerCase()), h("div", { className: "conc-value" }, pct(top5))),
-        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, "Top 10 " + etqContraparte.toLowerCase()), h("div", { className: "conc-value" }, pct(top10))),
-        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, etqContraparteSing + " principal"), h("div", { className: "conc-value" }, pct(principal))))));
+        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, "Top 5 " + etqContraparte.toLowerCase()), h("div", { className: "conc-value" }, pctSimple(top5))),
+        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, "Top 10 " + etqContraparte.toLowerCase()), h("div", { className: "conc-value" }, pctSimple(top10))),
+        h("div", { className: "conc-item" }, h("div", { className: "conc-label" }, etqContraparteSing + " principal"), h("div", { className: "conc-value" }, pctSimple(principal))))));
 }
 
 function RankingAduanaCard(props) {
@@ -460,9 +473,9 @@ function ResumenAduanaIngresosCard(props) {
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
         h("div", {}, h("div", { className: "mini-val" }, fmt(info.honorarios)), h("div", { className: "mini-label" }, "Honorarios AA")))),
     h("p", { className: "card-title", style: { fontSize: 12.5, margin: "0 0 8px" } }, "Ingresos por concepto (mes)"),
-    (info.conceptos || []).map((c, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", fontSize: 11.5, marginBottom: 5 } },
-      h("span", { style: { color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 160 } }, c.nombre),
-      h("span", { style: { color: "var(--sub)", fontWeight: 600 } }, (c.pct * 100).toFixed(1) + "%"))));
+    (info.conceptos || []).map((c, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11.5, marginBottom: 5 } },
+      h("span", { style: { color: "var(--text)" } }, c.nombre),
+      h("span", { style: { color: "var(--sub)", fontWeight: 600, flexShrink: 0 } }, (c.pct * 100).toFixed(1) + "%"))));
 }
 
 /* ── Paginas ──────────────────────────────────────────────────────────── */
@@ -559,7 +572,7 @@ function FlujoPage(props) {
     { icono: "trend", label: "Presupuesto acumulado", valor: k.ppto_acum_tot ? fmt(k.ppto_acum_tot) : "No disponible" },
   ];
   const kpiCards2 = [
-    { icono: "gauge", label: "Resultado operativo", valor: fmt(k.margen),
+    { icono: "gauge", label: "Utilidad operativa", valor: fmt(k.margen),
       deltaTxt: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, deltaPos: k.margen_pct >= 0 },
     { icono: "trend", label: esIngreso ? "Crecimiento vs. presupuesto" : "Variación vs. presupuesto", valor: vsPresupuestoTxt,
       deltaTxt: vsPresupuestoPct !== null ? "vs. Presupuesto" : null,
@@ -638,7 +651,10 @@ function FlujoPage(props) {
       h(RankingConcentracionCard, { titulo: `Principales ${etqContraparte.toLowerCase()} por ${etqSing.toLowerCase()}`,
         subtitulo: `Top 10 ${etqContraparte.toLowerCase()} del periodo`, badge: "Top 10",
         items: datos.por_contraparte.map((c) => ({ nombre: c.nombre, monto: c.monto })),
-        color: colorReal, etqContraparte, etqContraparteSing }))
+        color: colorReal, etqContraparte, etqContraparteSing,
+        totGeneral: k.tot_mes, totPropias: k.tot_propias,
+        etqColTotal: `% del ${etqSing}`,
+        etqColPropias: esIngreso ? "% Emitidas propias" : "% Recibidas propias" }))
   );
 }
 
