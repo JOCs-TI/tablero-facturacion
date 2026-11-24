@@ -242,7 +242,7 @@ function LineChartCard(props) {
   const margenEje = maxAbsEje * 0.12;
   return h("div", { className: "card" },
     h(CardHeader, { icono, titulo }),
-    h("p", { className: "card-subtitle" }, subtitulo),
+    subtitulo ? h("p", { className: "card-subtitle" }, subtitulo) : null,
     h("div", { style: { height: 230 } },
       h(ResponsiveContainer, { width: "100%", height: "100%" },
         h(LineChart, { data, margin: { top: 6, right: 10, left: 0, bottom: 0 } },
@@ -606,8 +606,7 @@ function FlujoPage(props) {
       "Comparativo contra el año anterior pendiente de cargar histórico de 2025."),
 
     h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
-      h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Tendencia de crecimiento" : "Tendencia de gasto",
-        subtitulo: `${esIngreso ? "Ingreso" : "Gasto"} real vs. presupuesto mensual`,
+      h(LineChartCard, { icono: "trend", titulo: `${esIngreso ? "Ingreso" : "Gasto"} real vs. presupuesto mensual`,
         categorias: tendenciaCats, real: tendenciaReal, ppto: tendenciaPpto,
         nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
         nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota: notaTendencia,
