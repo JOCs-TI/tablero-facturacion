@@ -932,6 +932,8 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
         tot_aduana = float(base_aduana["importe"].sum()) + honor_aduana
         entry = {"aduana": str(aduana), "total": tot_aduana, "n_operaciones": int(len(base_aduana))}
         if es_ingreso:
+            entry["emitidas"] = float(base_aduana["importe"].sum())
+            entry["honorarios"] = honor_aduana
             por_desc = base_aduana.groupby("descripcion")["importe"].sum().sort_values(ascending=False)
             top3 = por_desc.head(3)
             otros_val = float(por_desc.iloc[3:].sum()) if len(por_desc) > 3 else 0.0
