@@ -502,6 +502,10 @@ def load_emitidas_recibidas(periodo):
     cargar julio con las mismas reglas que se uso para agosto")."""
     return _cargar_emitidas_periodo(periodo), _cargar_recibidas_periodo(periodo)
 
+def _mes_txt_completo(mes_num):
+    cfg = next((c for c in PERIODOS.values() if c["mes_num"] == mes_num), None)
+    return cfg["mes_txt"] if cfg else MES_COL_MAYUS[mes_num].capitalize()
+
 @st.cache_data(ttl=300, show_spinner=False)
 def historial_ingresos(aduana_filtro=None):
     """Ingreso real (Emitidas + Honorarios AA) vs. Presupuesto de TODOS los
@@ -512,37 +516,56 @@ def historial_ingresos(aduana_filtro=None):
     que el resto de la página de Ingresos. Reusa _cargar_emitidas_periodo
     (cacheada) y los archivos de Honorarios AA/Presupuesto (un solo
     archivo para todos los meses, también cacheado) -- no vuelve a
-    descargar nada de Recibidas/Gastos."""
+    descargar nada de Recibidas/Gastos.
+    El Presupuesto SÍ llega hasta Diciembre aunque el mes todavía no tenga
+    datos reales cargados (pedido del usuario, 2026-11-20: "el presupuesto
+    ya puede llegar a diciembre") -- PRESUPUESTOS 2026 ya trae los 12
+    meses reales del año, independiente de qué meses de Emitidas/Recibidas
+    estén cargados. 'real' se deja en None para esos meses sin datos; el
+    frontend ya corta la línea ahí (Recharts no conecta huecos null)."""
+    mes_num_a_clave = {cfg["mes_num"]: clave for clave, cfg in PERIODOS.items()}
     filas = []
-    for clave, cfg in sorted(PERIODOS.items(), key=lambda kv: kv[1]["mes_num"]):
-        emitidas = _cargar_emitidas_periodo(clave)
-        honor = load_honorarios_aa(cfg["mes_num"])
-        if aduana_filtro:
-            emitidas = emitidas[emitidas["aduana"] == aduana_filtro]
-            honor = honor[honor["aduana"] == aduana_filtro]
-        real = float(emitidas["importe"].sum()) + float(honor["monto"].sum())
-        ppto_mensual, _, _ = load_presupuesto(cfg["mes_num"])
+    for mes_num in range(1, 13):
+        ppto_mensual, _, _ = load_presupuesto(mes_num)
         ppto = _ppto_total(ppto_mensual, "ingresos", aduana_filtro)
-        filas.append({"mes": cfg["mes_txt"], "real": real, "ppto": ppto})
+        if mes_num in mes_num_a_clave:
+            emitidas = _cargar_emitidas_periodo(mes_num_a_clave[mes_num])
+            honor = load_honorarios_aa(mes_num)
+            if aduana_filtro:
+                emitidas = emitidas[emitidas["aduana"] == aduana_filtro]
+                honor = honor[honor["aduana"] == aduana_filtro]
+            real = float(emitidas["importe"].sum()) + float(honor["monto"].sum())
+        else:
+            real = None
+        filas.append({"mes": _mes_txt_completo(mes_num), "real": real, "ppto": ppto})
     return filas
 
 @st.cache_data(ttl=300, show_spinner=False)
 def historial_gastos(aduana_filtro=None):
     """Mismo concepto que historial_ingresos pero para 'Tendencia de
     gasto' (pedido del usuario, 2026-11-18, "igual con este" sobre la
-    misma gráfica pero de Gastos): variación % de Gasto real (Recibidas)
-    vs. Presupuesto de TODOS los periodos ya cargados, respetando el
-    filtro de aduana."""
+    misma gráfica pero de Gastos): Gasto real (Recibidas) vs. Presupuesto
+    en pesos de TODOS los periodos ya cargados, respetando el filtro de
+    aduana. 'variacion' se deja calculada por si se necesita en otro lado,
+    pero ya no es lo que se grafica -- el usuario pidió (2026-11-19) que
+    el eje muestre cifras en pesos, igual que Ingresos, no porcentaje. El
+    Presupuesto llega hasta Diciembre igual que en historial_ingresos
+    (2026-11-20), con 'real'/'variacion' en None para meses sin datos."""
+    mes_num_a_clave = {cfg["mes_num"]: clave for clave, cfg in PERIODOS.items()}
     filas = []
-    for clave, cfg in sorted(PERIODOS.items(), key=lambda kv: kv[1]["mes_num"]):
-        recibidas = _cargar_recibidas_periodo(clave)
-        if aduana_filtro:
-            recibidas = recibidas[recibidas["aduana"] == aduana_filtro]
-        real = float(recibidas["importe"].sum())
-        ppto_mensual, _, _ = load_presupuesto(cfg["mes_num"])
+    for mes_num in range(1, 13):
+        ppto_mensual, _, _ = load_presupuesto(mes_num)
         ppto = _ppto_total(ppto_mensual, "gastos", aduana_filtro)
-        variacion = (real / ppto - 1) if ppto else 0.0
-        filas.append({"mes": cfg["mes_txt"], "real": real, "variacion": variacion})
+        if mes_num in mes_num_a_clave:
+            recibidas = _cargar_recibidas_periodo(mes_num_a_clave[mes_num])
+            if aduana_filtro:
+                recibidas = recibidas[recibidas["aduana"] == aduana_filtro]
+            real = float(recibidas["importe"].sum())
+            variacion = (real / ppto - 1) if ppto else 0.0
+        else:
+            real = None
+            variacion = None
+        filas.append({"mes": _mes_txt_completo(mes_num), "real": real, "ppto": ppto, "variacion": variacion})
     return filas
 
 @st.cache_data(ttl=300, show_spinner=False)

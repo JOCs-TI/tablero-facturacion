@@ -209,40 +209,29 @@ function EmptyCard(props) {
 function TendenciaTooltipCifras(props) {
   // Mismo cuadro para Ingresos y Gastos (pedido por el usuario,
   // 2026-11-18 vía WhatsApp: "la indicación que marca el cursor [en
-  // Gastos] se debe ver como el de ingresos"). En modo % (Gastos, pctMode)
-  // 'real' trae la VARIACION (lo que se grafica), no el monto -- el monto
-  // $ real viene aparte en payload[0].payload.monto (prop 'montoReal' de
-  // LineChartCard) para que se pueda ver el número, "no solo en
-  // porcentaje".
-  const { active, payload, label, colorReal, colorPpto, pctMode, nombreReal } = props;
+  // Gastos] se debe ver como el de ingresos"). Ambos grafican cifras en
+  // pesos (Gastos se graficaba en % de variación, pero el usuario pidió
+  // "cambialo por cifras", 2026-11-19).
+  const { active, payload, label, colorReal, colorPpto } = props;
   if (!active || !payload || !payload.length) return null;
   const real = payload.find((p) => p.dataKey === "real");
   const ppto = payload.find((p) => p.dataKey === "ppto");
-  const fila = payload[0] && payload[0].payload;
-  const monto = fila && typeof fila.monto === "number" ? fila.monto : null;
-  const variacionPct = pctMode
-    ? (real ? real.value : null)
-    : ((real && ppto && ppto.value) ? (real.value / ppto.value - 1) : null);
+  const variacionPct = (real && ppto && ppto.value) ? (real.value / ppto.value - 1) : null;
   return h("div", { style: {
     background: "#fff", border: "1px solid #E3E6EA", borderRadius: 8, padding: "10px 12px",
     boxShadow: "0 2px 8px rgba(0,0,0,0.12)", fontSize: 12,
   } },
     h("div", { style: { fontWeight: 700, marginBottom: 4 } }, label),
-    pctMode
-      ? (monto !== null ? h("div", { style: { color: colorReal } }, `${nombreReal} : ${fmt(monto)}`) : null)
-      : [
-          real ? h("div", { key: "r", style: { color: colorReal } }, `${real.name} : ${fmt(real.value)}`) : null,
-          ppto ? h("div", { key: "p", style: { color: colorPpto } }, `${ppto.name} : ${fmt(ppto.value)}`) : null,
-        ],
+    real ? h("div", { key: "r", style: { color: colorReal } }, `${real.name} : ${fmt(real.value)}`) : null,
+    ppto ? h("div", { key: "p", style: { color: colorPpto } }, `${ppto.name} : ${fmt(ppto.value)}`) : null,
     variacionPct !== null ? h("div", { style: { color: "#6B7280", marginTop: 4 } },
       `Variación vs. presupuesto : ${variacionPct >= 0 ? "+" : ""}${(variacionPct * 100).toFixed(1)}%`) : null);
 }
 
 function LineChartCard(props) {
-  const { icono, titulo, subtitulo, categorias, real, ppto, montoReal, nombreReal, nombrePpto, colorReal, colorPpto, nota, pctMode, yDomain, yTicks, mostrarEtiquetas } = props;
+  const { icono, titulo, subtitulo, categorias, real, ppto, nombreReal, nombrePpto, colorReal, colorPpto, nota, yDomain, yTicks, mostrarEtiquetas } = props;
   const mostrarEtiq = mostrarEtiquetas !== false;
-  const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i], monto: montoReal ? montoReal[i] : real[i] }));
-  const fmtEje = pctMode ? ((v) => (v * 100).toFixed(2) + "%") : fmt;
+  const data = categorias.map((c, i) => ({ cat: c, real: real[i], ppto: ppto[i] }));
   // Margen del eje proporcional al rango de los datos (12%) en vez de un
   // valor fijo -- un fijo pensado para porcentajes (ej. 0.02 = 2 puntos)
   // resulta invisible cuando los valores son cifras en millones. Si el
@@ -273,20 +262,20 @@ function LineChartCard(props) {
             // borde del area del grafico y Recharts lo recorta (se ve
             // "cortado"/invisible). Un margen fijo de aire arriba/abajo lo
             // resuelve sin depender de que los valores sean negativos o no.
-            tickFormatter: fmtEje, tick: { fontSize: 10, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" },
+            tickFormatter: fmt, tick: { fontSize: 10, fill: "#6B7280" }, axisLine: { stroke: "#E3E6EA" },
             domain: yDomain || [(dataMin) => Math.min(dataMin, 0) - margenEje, (dataMax) => Math.max(dataMax, 0) + margenEje],
             ticks: yTicks || undefined,
           }),
-          h(Tooltip, { content: (tp) => h(TendenciaTooltipCifras, { ...tp, colorReal, colorPpto, pctMode, nombreReal }) }),
+          h(Tooltip, { content: (tp) => h(TendenciaTooltipCifras, { ...tp, colorReal, colorPpto }) }),
           h(Legend, { wrapperStyle: { fontSize: 12 } }),
           h(Line, {
             type: "monotone", dataKey: "real", name: nombreReal, stroke: colorReal, strokeWidth: 3, dot: { r: 5 },
-            label: mostrarEtiq ? { position: "top", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: colorReal } : false,
+            label: mostrarEtiq ? { position: "top", formatter: fmt, fontSize: 11, fontWeight: 700, fill: colorReal } : false,
           }),
           h(Line, {
             type: "monotone", dataKey: "ppto", name: nombrePpto, stroke: colorPpto, strokeWidth: 2, strokeDasharray: "5 3",
             dot: { r: 5, strokeDasharray: "0", fill: colorPpto, stroke: "#fff", strokeWidth: 1.5 },
-            label: mostrarEtiq ? { position: "bottom", formatter: fmtEje, fontSize: 11, fontWeight: 700, fill: "#6B7280" } : false,
+            label: mostrarEtiq ? { position: "bottom", formatter: fmt, fontSize: 11, fontWeight: 700, fill: "#6B7280" } : false,
           })
         ))),
     nota ? h("p", { style: { margin: "6px 0 0", fontSize: 11, color: "var(--sub)", textAlign: "center" } }, nota) : null
@@ -583,26 +572,25 @@ function FlujoPage(props) {
   // independientemente del año por el que estamos filtrando" (Ingresos) e
   // "igual con este" (Gastos). Viene de datos.historial (Python,
   // historial_ingresos/historial_gastos) -- ya respeta el filtro de
-  // Aduana del header. Ingresos manda {mes, real, ppto} por periodo;
-  // Gastos manda {mes, variacion} (mismo pctMode de siempre, sin ppto).
+  // Aduana del header. Ambas mandan {mes, real, ppto} en pesos -- el eje
+  // de Gastos se graficaba en % de variación, pero el usuario pidió
+  // (2026-11-19) "cambialo por cifras", igual que Ingresos.
   const tendenciaCats = tieneHistorial ? datos.historial.map((f) => f.mes) : [datos.mes_txt];
   const tendenciaReal = tieneHistorial
-    ? (esIngreso ? datos.historial.map((f) => f.real) : datos.historial.map((f) => f.variacion))
-    : (esIngreso ? [k.tot_mes] : [variacion]);
-  const tendenciaPpto = tieneHistorial
-    ? (esIngreso ? datos.historial.map((f) => f.ppto) : datos.historial.map(() => 0))
-    : (esIngreso ? [k.ppto_mes_tot || 0] : [0]);
-  // Gastos grafica la VARIACION % en 'tendenciaReal' (para el trazo de la
-  // linea), pero el usuario pidio (2026-11-18, WhatsApp) poder ver tambien
-  // el monto $ real al pasar el cursor, no solo el porcentaje -- este
-  // array aparte lleva ese monto (Ingresos ya lo tiene en 'tendenciaReal'
-  // mismo, se repite aqui para que LineChartCard tenga una sola prop que
-  // leer sin importar el modo).
-  const tendenciaMonto = tieneHistorial
     ? datos.historial.map((f) => f.real)
     : [k.tot_mes];
+  const tendenciaPpto = tieneHistorial
+    ? datos.historial.map((f) => f.ppto)
+    : [k.ppto_mes_tot || 0];
+  // El Presupuesto ya llega hasta Diciembre (pedido del usuario,
+  // 2026-11-20), así que 'historial' siempre trae 12 filas -- la nota
+  // cuenta solo los meses con dato REAL (no null), no el largo del
+  // arreglo completo.
+  const mesesConReal = tieneHistorial
+    ? datos.historial.filter((f) => f.real !== null && f.real !== undefined).length
+    : 0;
   const notaTendencia = tieneHistorial
-    ? `${datos.historial.length} de 12 meses cargados · se completa con más histórico`
+    ? `${mesesConReal} de 12 meses cargados · se completa con más histórico`
     : nota;
 
   const donaSerie = datos.por_concepto.map((c) => ({ concepto: c.concepto, monto: c.monto }));
@@ -619,13 +607,13 @@ function FlujoPage(props) {
 
     h("div", { className: "grid-row", style: { gridTemplateColumns: "1.4fr 1fr" } },
       h(LineChartCard, { icono: "trend", titulo: esIngreso ? "Tendencia de crecimiento" : "Tendencia de gasto",
-        subtitulo: esIngreso ? "Ingreso real vs. presupuesto mensual" : "Variación mensual del gasto real vs. presupuesto",
-        categorias: tendenciaCats, real: tendenciaReal, ppto: tendenciaPpto, montoReal: tendenciaMonto,
+        subtitulo: `${esIngreso ? "Ingreso" : "Gasto"} real vs. presupuesto mensual`,
+        categorias: tendenciaCats, real: tendenciaReal, ppto: tendenciaPpto,
         nombreReal: esIngreso ? "Ingreso real" : "Gasto real",
-        nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, pctMode: !esIngreso, nota: notaTendencia,
+        nombrePpto: "Presupuesto", colorReal: colores.azul, colorPpto: colores.ppto, nota: notaTendencia,
         yDomain: esIngreso ? [0, 20000000] : undefined,
         yTicks: esIngreso ? [0, 5000000, 10000000, 15000000, 20000000] : undefined,
-        mostrarEtiquetas: !esIngreso && !tieneHistorial }),
+        mostrarEtiquetas: !tieneHistorial }),
       esIngreso
         ? h(ResumenAduanaIngresosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel })
         : h(ResumenAduanaGastosCard, { datos: datos.por_aduana, aduanaSel, setAduana: setAduanaSel, tot: k.tot_mes })),
