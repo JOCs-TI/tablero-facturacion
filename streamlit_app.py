@@ -640,7 +640,8 @@ def load_cierre_sueldos():
                                   "mes_num": mes_num, "monto": float(monto)})
     return pd.DataFrame(filas, columns=["aduana", "nombre", "mes_num", "monto"])
 
-def _construir_sueldos_desde_cierre(sueldos_f, cierre_df, mes_num):
+@st.cache_data(ttl=300, show_spinner=False)
+def _construir_sueldos_desde_cierre(mes_num):
     """Combina el detalle de load_sueldos() (9 componentes de la Ficha
     Tecnica, por quincena) con el reparto por aduana de
     load_cierre_sueldos() para el mes vigente: el monto de Cierre fija el
@@ -649,7 +650,15 @@ def _construir_sueldos_desde_cierre(sueldos_f, cierre_df, mes_num):
     completo de la persona ese mes (sumando sus quincenas). Un empleado
     que SI esta en Sueldos pero NO aparece en ninguna hoja de Cierre para
     este mes se deja con su Departamento de siempre, para no perderlo del
-    tablero."""
+    tablero.
+    Cacheada por mes_num (no recibe DataFrames como argumento, los pide
+    ella misma a load_sueldos/load_cierre_sueldos, que ya estan cacheados)
+    para que cambiar el filtro de Aduana en el header -- que no afecta
+    nada de esto -- no dispare de nuevo este merge fila por fila en Python
+    (reportado por el usuario, 2026-11-24: "cuando cambio por aduana se
+    tarda demasiado")."""
+    sueldos_f = load_sueldos(mes_num)
+    cierre_df = load_cierre_sueldos()
     cierre_mes = cierre_df[cierre_df["mes_num"] == mes_num]
     if cierre_mes.empty:
         return sueldos_f
@@ -866,9 +875,7 @@ MES_TXT = PERIODOS[periodo_sel]["mes_txt"]
 
 try:
     EM, REC = load_emitidas_recibidas(periodo_sel)
-    sueldos_df = load_sueldos(MES_ACTUAL)
-    cierre_sueldos_df = load_cierre_sueldos()
-    sueldos_df = _construir_sueldos_desde_cierre(sueldos_df, cierre_sueldos_df, MES_ACTUAL)
+    sueldos_df = _construir_sueldos_desde_cierre(MES_ACTUAL)
     costos_ref_df = load_costos_referencia(periodo_sel)
     honorarios_aa_df = load_honorarios_aa(MES_ACTUAL)
     ppto_mensual, ppto_acumulado, ppto_anual = load_presupuesto(MES_ACTUAL)
@@ -992,13 +999,33 @@ def _construir_arbol_nomina(sueldos_f):
                       "empleados": empleados})
     return arbol
 
-def _uo_payload():
+@st.cache_data(ttl=300, show_spinner=False)
+def _uo_payload(periodo_sel):
     """Utilidad Operativa por aduana -- regla confirmada con el usuario
     (2026-10-28): Ingreso = Emitidas + Honorarios AA; Utilidad = Ingreso -
     Sueldos - Gastos (Recibidas) - Costos de Referencia. Imile Laredo sale
     incompleta aqui (no tiene la hoja de P&L aparte que compensa que no
     factura por el SAT -- pendiente de conectar) -- se deja tal cual, no se
-    inventa un ajuste."""
+    inventa un ajuste.
+    Nunca se filtra por aduana (a proposito, ver comentario de mas abajo
+    donde se arma el payload) -- por eso esta funcion pide sus propios
+    datos COMPLETOS via los loaders ya cacheados (en vez de recibir las
+    variables EM/REC/sueldos_df/etc. ya filtradas del script principal) y
+    se cachea ella misma por periodo_sel. Antes se recalculaba entera en
+    cada rerun aunque solo hubiera cambiado el filtro de Aduana del
+    header, que no le afecta en nada -- esa era la causa principal de que
+    cambiar de aduana se sintiera lento (reportado por el usuario,
+    2026-11-24)."""
+    mes_num = PERIODOS[periodo_sel]["mes_num"]
+    mes_txt = PERIODOS[periodo_sel]["mes_txt"]
+    EM, REC = load_emitidas_recibidas(periodo_sel)
+    sueldos_df = _construir_sueldos_desde_cierre(mes_num)
+    costos_ref_df = load_costos_referencia(periodo_sel)
+    honorarios_aa_df = load_honorarios_aa(mes_num)
+    ppto_mensual, _, ppto_anual = load_presupuesto(mes_num)
+    tot_em = float(EM["importe"].sum())
+    tot_rec = float(REC["importe"].sum())
+
     aduanas = set(EM["aduana"]) | set(REC["aduana"]) | set(sueldos_df["aduana"]) \
             | set(costos_ref_df["aduana"]) | set(honorarios_aa_df["aduana"])
     em_ad = EM.groupby("aduana")["importe"].sum()
@@ -1037,9 +1064,9 @@ def _uo_payload():
                                     "sueldos": sue, "gastos": gas,
                                     "utilidad": ing - cos - sue - gas})
 
-    ingreso_total = float(TOT_EM) + float(honor_ad.sum())
+    ingreso_total = tot_em + float(honor_ad.sum())
     sueldos_total = float(sueldos_ad.sum())
-    gastos_total = float(TOT_REC)
+    gastos_total = tot_rec
     costos_total = float(costos_ad.sum())
     utilidad_total = ingreso_total - sueldos_total - gastos_total - costos_total
 
@@ -1057,7 +1084,7 @@ def _uo_payload():
                     "ppto": _ppto_utilidad_total(ppto_mensual) if tiene_ppto else None,
                     "ppto_anual": _ppto_utilidad_total(ppto_anual) if tiene_ppto else None},
     }
-    return {"tiene_ppto": tiene_ppto, "mes_txt": MES_TXT, "por_aduana": por_aduana,
+    return {"tiene_ppto": tiene_ppto, "mes_txt": mes_txt, "por_aduana": por_aduana,
            "ppto_por_aduana": ppto_por_aduana, "estado_resultados": estado_resultados}
 
 def _nomina_payload(sueldos_f, tot_rec):
@@ -1167,7 +1194,7 @@ _dash_payload = {
     "aduanas_disponibles": ADUANAS_DISPONIBLES,
     "periodo_filtro": periodo_sel,
     "periodos_disponibles": PERIODOS_DISPONIBLES,
-    "utilidad_operativa": _uo_payload(),
+    "utilidad_operativa": _uo_payload(periodo_sel),
     "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
                               aduana_sel if aduana_sel != "TODAS" else None),
     "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
