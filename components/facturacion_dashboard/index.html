@@ -559,7 +559,6 @@ function FlujoPage(props) {
     { icono: "trend", label: "Presupuesto acumulado", valor: k.ppto_acum_tot ? fmt(k.ppto_acum_tot) : "No disponible" },
   ];
   const kpiCards2 = [
-    { icono: "people", label: `${etqContraparte} activos`, valor: String(k.n_contrapartes) },
     { icono: "gauge", label: "Resultado operativo", valor: fmt(k.margen),
       deltaTxt: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, deltaPos: k.margen_pct >= 0 },
     { icono: "trend", label: esIngreso ? "Crecimiento vs. mes anterior" : "Variación vs. mes anterior", valor: vsMesAnteriorTxt,
@@ -603,7 +602,7 @@ function FlujoPage(props) {
   return h(React.Fragment, {},
     h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(4, 1fr)" } },
       kpiCards.map((c, i) => h(StatCardInline, { key: i, c }))),
-    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(3, 1fr)" } },
+    h("div", { className: "grid-row", style: { gridTemplateColumns: "repeat(2, 1fr)" } },
       kpiCards2.map((c, i) => h(StatCardInline, { key: i, c }))),
 
     h("p", { style: { fontSize: 12, color: "var(--sub)", margin: "0 0 16px" } },
