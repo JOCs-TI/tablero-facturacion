@@ -544,11 +544,11 @@ function FlujoPage(props) {
   const idxMesActual = tieneHistorial ? datos.historial.findIndex((f) => f.mes === datos.mes_txt) : -1;
   const acumuladoReal = (tieneHistorial && idxMesActual >= 0)
     ? datos.historial.slice(0, idxMesActual + 1).reduce((s, f) => s + f.real, 0) : null;
-  const realMesAnterior = (tieneHistorial && idxMesActual > 0) ? datos.historial[idxMesActual - 1].real : null;
-  const vsMesAnteriorPct = (realMesAnterior !== null && realMesAnterior !== 0)
-    ? (k.tot_mes / realMesAnterior - 1) : null;
-  const vsMesAnteriorTxt = vsMesAnteriorPct !== null
-    ? (vsMesAnteriorPct >= 0 ? "+" : "") + (vsMesAnteriorPct * 100).toFixed(1) + "%" : "No disponible";
+  // Antes comparaba contra el mes anterior; el usuario pidio (2026-11-24)
+  // que compare contra el Presupuesto del mes en su lugar.
+  const vsPresupuestoPct = k.cumplimiento !== null ? (k.cumplimiento - 1) : null;
+  const vsPresupuestoTxt = vsPresupuestoPct !== null
+    ? (vsPresupuestoPct >= 0 ? "+" : "") + (vsPresupuestoPct * 100).toFixed(1) + "%" : "No disponible";
 
   const kpiCards = [
     { icono: "money", label: `${etqSing} del mes`, valor: fmt(k.tot_mes), sub: datos.mes_txt },
@@ -561,9 +561,9 @@ function FlujoPage(props) {
   const kpiCards2 = [
     { icono: "gauge", label: "Resultado operativo", valor: fmt(k.margen),
       deltaTxt: k.margen_pct !== null ? "Margen " + (k.margen_pct * 100).toFixed(1) + "%" : null, deltaPos: k.margen_pct >= 0 },
-    { icono: "trend", label: esIngreso ? "Crecimiento vs. mes anterior" : "Variación vs. mes anterior", valor: vsMesAnteriorTxt,
-      deltaTxt: vsMesAnteriorPct !== null ? "vs. " + datos.historial[idxMesActual - 1].mes : null,
-      deltaPos: vsMesAnteriorPct !== null ? vsMesAnteriorPct >= 0 : null },
+    { icono: "trend", label: esIngreso ? "Crecimiento vs. presupuesto" : "Variación vs. presupuesto", valor: vsPresupuestoTxt,
+      deltaTxt: vsPresupuestoPct !== null ? "vs. Presupuesto" : null,
+      deltaPos: vsPresupuestoPct !== null ? vsPresupuestoPct >= 0 : null },
   ];
 
   const nota = "1 de 12 meses cargados · se completa con más histórico";
