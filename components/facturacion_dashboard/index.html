@@ -89,6 +89,17 @@ select.aduana-select {
   padding: 3px 9px; cursor: pointer; margin-right: 8px;
 }
 .breadcrumb-sep { color: #b7c0c9; }
+.aduana-dropdown {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 41; background: var(--card);
+  border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 4px 14px rgba(16,24,40,0.15);
+  padding: 6px; min-width: 210px; max-height: 260px; overflow-y: auto;
+}
+.aduana-dropdown-item {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px;
+  color: var(--text); border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.aduana-dropdown-item:hover { background: #EEF1F5; }
+.aduana-dropdown-item input { margin: 0; cursor: pointer; }
 .breadcrumb-item { cursor: pointer; text-decoration: underline; }
 .breadcrumb-item.actual { cursor: default; font-weight: 700; color: var(--azul); text-decoration: none; }
 
@@ -425,7 +436,7 @@ function EstadoResultadosCard(props) {
   return h("div", { className: "card" },
     h(CardHeader, { icono: "doc", titulo: "Estado de Resultados" }),
     h("p", { className: "card-subtitle" },
-      `Mes: ${mesTxt}. Vista acumulada y comparativo contra 2025 pendientes de histórico (ver Resumen Ejecutivo). "Ppto. anual" es la meta real de todo el año (acumulado a diciembre del presupuesto), no una proyección.`),
+      `Periodo: ${mesTxt}. Vista acumulada y comparativo contra 2025 pendientes de histórico (ver Resumen Ejecutivo). "Ppto. anual" es la meta real de todo el año (acumulado a diciembre del presupuesto), no una proyección.`),
     h("table", { className: "dtable" },
       h("tbody", {},
         h("tr", {}, h("th", {}, "Concepto"), h("th", { className: "num" }, "Real"), h("th", { className: "num" }, "Presupuesto"),
@@ -445,7 +456,7 @@ function ResumenAduanaGastosCard(props) {
       opciones.map((a) => h("option", { key: a, value: a }, a))),
     h("div", { className: "grid-row", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 } },
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
-        h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Gasto total del mes"))),
+        h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Gasto total del periodo"))),
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.hex),
         h("div", {}, h("div", { className: "mini-val" }, fmt(info.costos_referencia)),
           h("div", { className: "mini-label" }, `Costos de referencia · ${info.total ? pct(info.costos_referencia_pct) : "—"} del gasto`))),
@@ -465,14 +476,14 @@ function ResumenAduanaIngresosCard(props) {
       opciones.map((a) => h("option", { key: a, value: a }, a))),
     h("div", { className: "grid-row", style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 14 } },
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
-        h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Ingreso total del mes"))),
+        h("div", {}, h("div", { className: "mini-val" }, fmt(info.total)), h("div", { className: "mini-label" }, "Ingreso total del periodo"))),
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.list),
         h("div", {}, h("div", { className: "mini-val" }, info.n_operaciones), h("div", { className: "mini-label" }, "Facturas emitidas"))),
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
         h("div", {}, h("div", { className: "mini-val" }, fmt(info.emitidas)), h("div", { className: "mini-label" }, "Emitidas"))),
       h("div", { className: "mini-stat" }, h("div", { className: "stat-icon" }, ICONOS.doc),
         h("div", {}, h("div", { className: "mini-val" }, fmt(info.honorarios)), h("div", { className: "mini-label" }, "Honorarios AA")))),
-    h("p", { className: "card-title", style: { fontSize: 12.5, margin: "0 0 8px" } }, "Ingresos por concepto (mes)"),
+    h("p", { className: "card-title", style: { fontSize: 12.5, margin: "0 0 8px" } }, "Ingresos por concepto (periodo)"),
     (info.conceptos || []).map((c, i) => h("div", { key: i, style: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11.5, marginBottom: 5 } },
       h("span", { style: { color: "var(--text)" } }, c.nombre),
       h("span", { style: { color: "var(--sub)", fontWeight: 600, flexShrink: 0 } }, (c.pct * 100).toFixed(1) + "%"))));
@@ -522,11 +533,9 @@ function UtilidadOperativaPage(props) {
         h("div", { className: "stat-value" }, c.valor),
         h("div", { className: "stat-sub" }, c.sub),
         c.barra ? h(BarraRealPpto, c.barra) : null))),
-    h("p", { style: { fontSize: 12, color: "var(--sub)", margin: "0 0 16px" } },
-      "Acumulado y avance contra presupuesto anual pendientes de cargar el histórico real mes a mes (hoy solo hay un mes de datos reales en vivo)."),
     h("div", { className: "grid-row", style: { gridTemplateColumns: "1fr" } },
       h(RankingAduanaCard, { titulo: "Rentabilidad por Aduana",
-        subtitulo: "Utilidad Operativa real (barra) vs. presupuesto del mes (marca ámbar).",
+        subtitulo: "Utilidad Operativa real (barra) vs. presupuesto del periodo (marca ámbar).",
         consolidadoTxt, items: rankItems, color: colores.azul, modo: modoRank, onModo: setModoRank, nTotal })),
     datos.tiene_ppto ? h("div", { className: "grid-row", style: { gridTemplateColumns: "1fr" } },
       h(EstadoResultadosCard, { mesTxt: datos.mes_txt, er: datos.estado_resultados })) : null
@@ -554,7 +563,11 @@ function FlujoPage(props) {
   // Pedido del usuario, 2026-11-18: "esos cuadros también ya llenan los
   // de información" -- ahora que hay histórico real de varios meses.
   const tieneHistorial = Array.isArray(datos.historial) && datos.historial.length > 0;
-  const idxMesActual = tieneHistorial ? datos.historial.findIndex((f) => f.mes === datos.mes_txt) : -1;
+  // 'mes_fin_txt' es el ULTIMO mes del rango de periodos seleccionado --
+  // 'mes_txt' puede ser un rango ("Mayo - Agosto") que no empata con
+  // ningun mes individual de 'historial' (pedido del usuario, 2026-11-25:
+  // poder filtrar por un rango, no solo un mes).
+  const idxMesActual = tieneHistorial ? datos.historial.findIndex((f) => f.mes === datos.mes_fin_txt) : -1;
   const acumuladoReal = (tieneHistorial && idxMesActual >= 0)
     ? datos.historial.slice(0, idxMesActual + 1).reduce((s, f) => s + f.real, 0) : null;
   // Antes comparaba contra el mes anterior; el usuario pidio (2026-11-24)
@@ -564,9 +577,9 @@ function FlujoPage(props) {
     ? (vsPresupuestoPct >= 0 ? "+" : "") + (vsPresupuestoPct * 100).toFixed(1) + "%" : "No disponible";
 
   const kpiCards = [
-    { icono: "money", label: `${etqSing} del mes`, valor: fmt(k.tot_mes), sub: datos.mes_txt },
+    { icono: "money", label: `${etqSing} del periodo`, valor: fmt(k.tot_mes), sub: datos.mes_txt },
     { icono: "stack", label: `${etqSing} acumulado`, valor: acumuladoReal !== null ? fmt(acumuladoReal) : "No disponible" },
-    { icono: "target", label: "Presupuesto del mes", valor: k.ppto_mes_tot ? fmt(k.ppto_mes_tot) : "No disponible",
+    { icono: "target", label: "Presupuesto del periodo", valor: k.ppto_mes_tot ? fmt(k.ppto_mes_tot) : "No disponible",
       deltaTxt: k.cumplimiento !== null ? (k.cumplimiento * 100).toFixed(0) + "% de cumplimiento" : null,
       deltaPos: k.cumplimiento !== null ? k.cumplimiento >= 1 : null },
     { icono: "trend", label: "Presupuesto acumulado", valor: k.ppto_acum_tot ? fmt(k.ppto_acum_tot) : "No disponible" },
@@ -899,6 +912,38 @@ function TarjetaCreditoPage(props) {
                 etiqueta: "del gasto facturado" }))))));
 }
 
+function AduanaMultiSelect(props) {
+  // Filtro de VARIAS aduanas a la vez (pedido del usuario, 2026-11-25;
+  // antes era un <select> de una sola aduana) -- lista vacia = "Todas".
+  // El overlay de pantalla completa cierra el menu al hacer clic afuera;
+  // stopPropagation en el panel evita que un clic en un checkbox cierre
+  // el menu de inmediato (burbujearia hasta el onClick del pill).
+  const { opciones, seleccion, onCambio } = props;
+  const [abierto, setAbierto] = useState(false);
+  const todas = seleccion.length === 0;
+  function toggle(aduana) {
+    onCambio(seleccion.includes(aduana) ? seleccion.filter((a) => a !== aduana) : [...seleccion, aduana]);
+  }
+  const etiqueta = todas ? "Todas" : seleccion.length === 1 ? seleccion[0] : `${seleccion.length} aduanas`;
+  return h("div", { className: "filtro-pill", style: { position: "relative", cursor: "pointer" },
+                    onClick: () => setAbierto(!abierto) },
+    // z-index 42 (por encima del overlay, 40) para que el icono/etiqueta del
+    // pill se puedan seguir clicando -- y asi volver a cerrar el menu --
+    // aun con el overlay de pantalla completa ya abierto encima de todo.
+    h("span", { style: { position: "relative", zIndex: 42 } }, ICONOS.pin),
+    h("span", { style: { position: "relative", zIndex: 42 } },
+      h("span", { className: "fp-label" }, "Aduana"),
+      h("span", { className: "fp-value" }, etiqueta)),
+    abierto ? h(React.Fragment, {},
+      h("div", { style: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 40 } }),
+      h("div", { className: "aduana-dropdown", onClick: (e) => e.stopPropagation() },
+        h("div", { className: "aduana-dropdown-item", onClick: () => onCambio([]) },
+          h("input", { type: "checkbox", checked: todas, readOnly: true }), h("span", {}, "Todas")),
+        opciones.map((a) => h("div", { className: "aduana-dropdown-item", key: a, onClick: () => toggle(a) },
+          h("input", { type: "checkbox", checked: seleccion.includes(a), readOnly: true }), h("span", {}, a))))
+    ) : null);
+}
+
 const TABS = [
   { key: "Utilidad Operativa", icono: "chart", titulo: "Utilidad Operativa", subtitulo: "Tablero Carga-Aérea" },
   { key: "Ingresos", icono: "chart", titulo: "Análisis de Ingresos", subtitulo: "Comportamiento, composición y principales generadores de ingresos" },
@@ -916,13 +961,13 @@ function App(props) {
     "Nómina": d.nomina, "Tarjeta de Crédito": d.tarjeta_credito,
   };
   const datosActivos = datosPorTab[tab];
-  const mesTxt = (datosActivos && datosActivos.mes_txt) || (d.utilidad_operativa && d.utilidad_operativa.mes_txt) || "—";
 
-  const aduanaFiltro = d.aduana_filtro || "TODAS";
+  const aduanasFiltro = d.aduanas_filtro || [];
   const aduanasDisp = d.aduanas_disponibles || [];
-  const enAduanaFiltro = aduanaFiltro !== "TODAS";
+  const enAduanaFiltro = aduanasFiltro.length > 0;
 
-  const periodoFiltro = d.periodo_filtro || "";
+  const periodoDesde = d.periodo_desde || "";
+  const periodoHasta = d.periodo_hasta || "";
   const periodosDisp = d.periodos_disponibles || [];
 
   let paginaEl;
@@ -944,25 +989,26 @@ function App(props) {
     h("span", {}, ICONOS.calendar),
     h("span", {},
       h("span", { className: "fp-label" }, "Periodo"),
-      h("select", {
-        className: "fp-select", value: periodoFiltro,
-        onChange: (e) => Streamlit.setComponentValue({ periodo_to: e.target.value, nav_to: tab }),
-      },
-        periodosDisp.map((p) => h("option", { key: p.clave, value: p.clave }, p.mes_txt)))));
+      h("span", { style: { display: "flex", alignItems: "center", gap: 4 } },
+        h("select", {
+          className: "fp-select", value: periodoDesde,
+          onChange: (e) => Streamlit.setComponentValue({ periodo_desde_to: e.target.value, periodo_hasta_to: periodoHasta, nav_to: tab }),
+        },
+          periodosDisp.map((p) => h("option", { key: p.clave, value: p.clave }, p.mes_txt))),
+        h("span", { style: { fontSize: 11, color: "var(--sub)" } }, "a"),
+        h("select", {
+          className: "fp-select", value: periodoHasta,
+          onChange: (e) => Streamlit.setComponentValue({ periodo_desde_to: periodoDesde, periodo_hasta_to: e.target.value, nav_to: tab }),
+        },
+          periodosDisp.map((p) => h("option", { key: p.clave, value: p.clave }, p.mes_txt))))));
   const pillAnio = h("div", { className: "filtro-pill" },
     h("span", {}, ICONOS.year),
     h("span", {}, h("span", { className: "fp-label" }, "Año"), h("span", { className: "fp-value" }, "2026")));
 
-  const pillAduana = tab !== "Utilidad Operativa" ? h("div", { className: "filtro-pill" },
-    h("span", {}, ICONOS.pin),
-    h("span", {},
-      h("span", { className: "fp-label" }, "Aduana"),
-      h("select", {
-        className: "fp-select", value: aduanaFiltro,
-        onChange: (e) => Streamlit.setComponentValue({ aduana_to: e.target.value, nav_to: tab }),
-      },
-        h("option", { value: "TODAS" }, "Todas"),
-        aduanasDisp.map((a) => h("option", { key: a, value: a }, a))))) : null;
+  const pillAduana = h(AduanaMultiSelect, {
+    opciones: aduanasDisp, seleccion: aduanasFiltro,
+    onCambio: (nueva) => { console.log("DEBUG onCambio envia", JSON.stringify(nueva)); Streamlit.setComponentValue({ aduanas_to: nueva, nav_to: tab }); },
+  });
 
   const headerRight = h("div", { style: { display: "flex", gap: 10 } }, pillPeriodo, pillAnio, pillAduana);
 

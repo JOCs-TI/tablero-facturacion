@@ -507,16 +507,17 @@ def _mes_txt_completo(mes_num):
     return cfg["mes_txt"] if cfg else MES_COL_MAYUS[mes_num].capitalize()
 
 @st.cache_data(ttl=300, show_spinner=False)
-def historial_ingresos(aduana_filtro=None):
+def historial_ingresos(aduanas_filtro=None):
     """Ingreso real (Emitidas + Honorarios AA) vs. Presupuesto de TODOS los
     periodos ya cargados (ver PERIODOS), no solo el mes seleccionado --
     pedido del usuario, 2026-11-18: 'sobre esta grafica de tendencia
     quiero que se vean los demas meses, independientemente del año por el
-    que estamos filtrando'. Respeta el filtro de aduana del header, igual
-    que el resto de la página de Ingresos. Reusa _cargar_emitidas_periodo
-    (cacheada) y los archivos de Honorarios AA/Presupuesto (un solo
-    archivo para todos los meses, también cacheado) -- no vuelve a
-    descargar nada de Recibidas/Gastos.
+    que estamos filtrando'. Respeta el filtro de aduana(s) del header --
+    'aduanas_filtro' es None/vacio (todas) o una tupla de una o varias
+    aduanas (pedido del usuario, 2026-11-25: poder elegir varias a la
+    vez). Reusa _cargar_emitidas_periodo (cacheada) y los archivos de
+    Honorarios AA/Presupuesto (un solo archivo para todos los meses,
+    también cacheado) -- no vuelve a descargar nada de Recibidas/Gastos.
     El Presupuesto SÍ llega hasta Diciembre aunque el mes todavía no tenga
     datos reales cargados (pedido del usuario, 2026-11-20: "el presupuesto
     ya puede llegar a diciembre") -- PRESUPUESTOS 2026 ya trae los 12
@@ -527,13 +528,13 @@ def historial_ingresos(aduana_filtro=None):
     filas = []
     for mes_num in range(1, 13):
         ppto_mensual, _, _ = load_presupuesto(mes_num)
-        ppto = _ppto_total(ppto_mensual, "ingresos", aduana_filtro)
+        ppto = _ppto_total(ppto_mensual, "ingresos", aduanas_filtro)
         if mes_num in mes_num_a_clave:
             emitidas = _cargar_emitidas_periodo(mes_num_a_clave[mes_num])
             honor = load_honorarios_aa(mes_num)
-            if aduana_filtro:
-                emitidas = emitidas[emitidas["aduana"] == aduana_filtro]
-                honor = honor[honor["aduana"] == aduana_filtro]
+            if aduanas_filtro:
+                emitidas = emitidas[emitidas["aduana"].isin(aduanas_filtro)]
+                honor = honor[honor["aduana"].isin(aduanas_filtro)]
             real = float(emitidas["importe"].sum()) + float(honor["monto"].sum())
         else:
             real = None
@@ -541,21 +542,23 @@ def historial_ingresos(aduana_filtro=None):
     return filas
 
 @st.cache_data(ttl=300, show_spinner=False)
-def historial_gastos(aduana_filtro=None):
+def historial_gastos(aduanas_filtro=None):
     """Mismo concepto que historial_ingresos pero para 'Tendencia de
     gasto' (pedido del usuario, 2026-11-18, "igual con este" sobre la
-    misma gráfica pero de Gastos): Gasto real (Recibidas) vs. Presupuesto
-    en pesos de TODOS los periodos ya cargados, respetando el filtro de
-    aduana. 'variacion' se deja calculada por si se necesita en otro lado,
-    pero ya no es lo que se grafica -- el usuario pidió (2026-11-19) que
-    el eje muestre cifras en pesos, igual que Ingresos, no porcentaje. El
-    Presupuesto llega hasta Diciembre igual que en historial_ingresos
-    (2026-11-20), con 'real'/'variacion' en None para meses sin datos."""
+    misma gráfica pero de Gastos): Gasto real (Recibidas + Costos de
+    Referencia + Sueldos) vs. Presupuesto en pesos de TODOS los periodos
+    ya cargados, respetando el filtro de una o varias aduanas
+    ('aduanas_filtro', 2026-11-25). 'variacion' se deja calculada por si
+    se necesita en otro lado, pero ya no es lo que se grafica -- el
+    usuario pidió (2026-11-19) que el eje muestre cifras en pesos, igual
+    que Ingresos, no porcentaje. El Presupuesto llega hasta Diciembre
+    igual que en historial_ingresos (2026-11-20), con 'real'/'variacion'
+    en None para meses sin datos."""
     mes_num_a_clave = {cfg["mes_num"]: clave for clave, cfg in PERIODOS.items()}
     filas = []
     for mes_num in range(1, 13):
         ppto_mensual, _, _ = load_presupuesto(mes_num)
-        ppto = _ppto_total(ppto_mensual, "gastos", aduana_filtro)
+        ppto = _ppto_total(ppto_mensual, "gastos", aduanas_filtro)
         if mes_num in mes_num_a_clave:
             clave = mes_num_a_clave[mes_num]
             recibidas = _cargar_recibidas_periodo(clave)
@@ -566,10 +569,10 @@ def historial_gastos(aduana_filtro=None):
             # Recibidas (ver _cargar_recibidas_periodo).
             costos = load_costos_referencia(clave)
             sueldos = _construir_sueldos_desde_cierre(mes_num)
-            if aduana_filtro:
-                recibidas = recibidas[recibidas["aduana"] == aduana_filtro]
-                costos = costos[costos["aduana"] == aduana_filtro]
-                sueldos = sueldos[sueldos["aduana"] == aduana_filtro]
+            if aduanas_filtro:
+                recibidas = recibidas[recibidas["aduana"].isin(aduanas_filtro)]
+                costos = costos[costos["aduana"].isin(aduanas_filtro)]
+                sueldos = sueldos[sueldos["aduana"].isin(aduanas_filtro)]
             real = (float(recibidas["importe"].sum()) + float(costos["monto"].sum())
                    + float(sueldos["total"].sum()))
             variacion = (real / ppto - 1) if ppto else 0.0
@@ -838,16 +841,18 @@ def load_presupuesto(mes_num):
     _, ppto_anual = resultado[12]
     return mensual, acumulado, ppto_anual
 
-def _ppto_total(d, concepto, aduana=None):
-    """Suma el total de un concepto del presupuesto. Si se da 'aduana', solo
-    esa aduana; si no (default), la suma entre todas. El argumento se pasa
-    explicito desde _flujo_payload (que sí respeta el filtro de aduana del
-    header) y se omite desde _uo_payload (que nunca debe verse afectado por
-    ese filtro, igual que el resto de Utilidad Operativa)."""
+def _ppto_total(d, concepto, aduanas=None):
+    """Suma el total de un concepto del presupuesto. 'aduanas' puede ser
+    None (todas), una sola aduana (str) o una lista/tupla de aduanas --
+    desde que el filtro de aduana del header admite varias a la vez
+    (pedido del usuario, 2026-11-25), tanto Utilidad Operativa como
+    Ingresos/Gastos lo respetan."""
     valores = d.get(concepto, {})
-    if aduana is not None:
-        return float(valores.get(aduana, 0.0))
-    return float(sum(valores.values()))
+    if aduanas is None:
+        return float(sum(valores.values()))
+    if isinstance(aduanas, str):
+        return float(valores.get(aduanas, 0.0))
+    return float(sum(valores.get(a, 0.0) for a in aduanas))
 
 import re
 UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
@@ -873,23 +878,86 @@ def load_amex(persona):
     out["facturado"] = out["uuids"].map(len) > 0
     return out.reset_index(drop=True)
 
-# Selector de periodo (pedido por el usuario, 2026-10-30: "vamos a cargar
-# julio con las mismas reglas que se uso para agosto") -- mismo mecanismo
-# que el filtro de aduana (pill en el header + session_state).
-if "periodo_filtro" not in st.session_state:
-    st.session_state["periodo_filtro"] = PERIODO_DEFAULT
-periodo_sel = st.session_state["periodo_filtro"]
-if periodo_sel not in PERIODOS:
-    periodo_sel = st.session_state["periodo_filtro"] = PERIODO_DEFAULT
-MES_ACTUAL = PERIODOS[periodo_sel]["mes_num"]
-MES_TXT = PERIODOS[periodo_sel]["mes_txt"]
+# Agregadores de RANGO de periodos -- antes solo se cargaba un periodo a
+# la vez; el usuario pidió (2026-11-25) poder elegir un rango (ej. "Mayo a
+# Agosto") y que los totales de las 5 pestañas sean la SUMA de esos
+# meses. Cada uno reusa los loaders de un solo periodo/mes (ya cacheados
+# por su cuenta) y solo concatena/suma -- así cambiar el rango no vuelve a
+# descargar nada que ya estuviera en caché. Se cachean también por su
+# cuenta, por la tupla de periodos/meses, para no repetir el concat/suma
+# en cada rerun si el rango no cambió.
+@st.cache_data(ttl=300, show_spinner="Cargando facturación...")
+def _cargar_rango(claves_periodos):
+    ems, recs = [], []
+    for clave in claves_periodos:
+        em, rec = load_emitidas_recibidas(clave)
+        ems.append(em)
+        recs.append(rec)
+    return pd.concat(ems, ignore_index=True), pd.concat(recs, ignore_index=True)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _sueldos_rango(meses_num):
+    return pd.concat([_construir_sueldos_desde_cierre(m) for m in meses_num], ignore_index=True)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _costos_rango(claves_periodos):
+    return pd.concat([load_costos_referencia(c) for c in claves_periodos], ignore_index=True)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _honorarios_rango(meses_num):
+    return pd.concat([load_honorarios_aa(m) for m in meses_num], ignore_index=True)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _presupuesto_rango(meses_num):
+    """Suma el presupuesto MENSUAL de cada mes del rango, concepto por
+    concepto y aduana por aduana. El 'acumulado' (desde Enero) y el
+    'ppto_anual' (meta del año completo) NUNCA dependen del rango
+    elegido -- se piden aparte con load_presupuesto(mes del 'hasta')."""
+    total = {}
+    for m in meses_num:
+        mensual, _, _ = load_presupuesto(m)
+        for concepto, por_aduana in mensual.items():
+            destino = total.setdefault(concepto, {})
+            for aduana, monto in por_aduana.items():
+                destino[aduana] = destino.get(aduana, 0.0) + monto
+    return total
+
+# Selector de RANGO de periodos (antes un solo periodo -- pedido del
+# usuario, 2026-10-30: "vamos a cargar julio con las mismas reglas que se
+# uso para agosto"; ahora "Desde"/"Hasta", 2026-11-25) -- mismo mecanismo
+# que el filtro de aduana (pills en el header + session_state).
+CLAVES_PERIODOS_ORDENADAS = [k for k, _ in sorted(PERIODOS.items(), key=lambda kv: kv[1]["mes_num"])]
+if "periodo_desde" not in st.session_state:
+    st.session_state["periodo_desde"] = PERIODO_DEFAULT
+if "periodo_hasta" not in st.session_state:
+    st.session_state["periodo_hasta"] = PERIODO_DEFAULT
+periodo_desde = st.session_state["periodo_desde"]
+periodo_hasta = st.session_state["periodo_hasta"]
+if periodo_desde not in PERIODOS:
+    periodo_desde = st.session_state["periodo_desde"] = PERIODO_DEFAULT
+if periodo_hasta not in PERIODOS:
+    periodo_hasta = st.session_state["periodo_hasta"] = PERIODO_DEFAULT
+if PERIODOS[periodo_desde]["mes_num"] > PERIODOS[periodo_hasta]["mes_num"]:
+    # "Desde" quedó después de "Hasta" (ej. cambiaron "Desde" a Agosto con
+    # "Hasta" todavía en Mayo) -- se empareja para que el rango siempre
+    # sea válido en vez de quedar vacío.
+    periodo_desde = st.session_state["periodo_desde"] = periodo_hasta
+
+RANGO_PERIODOS = tuple(k for k in CLAVES_PERIODOS_ORDENADAS
+                       if PERIODOS[periodo_desde]["mes_num"] <= PERIODOS[k]["mes_num"] <= PERIODOS[periodo_hasta]["mes_num"])
+RANGO_MESES_NUM = tuple(PERIODOS[k]["mes_num"] for k in RANGO_PERIODOS)
+MES_ACTUAL = PERIODOS[periodo_hasta]["mes_num"]
+RANGO_TXT = (PERIODOS[periodo_desde]["mes_txt"] if periodo_desde == periodo_hasta
+            else f'{PERIODOS[periodo_desde]["mes_txt"]} - {PERIODOS[periodo_hasta]["mes_txt"]}')
+MES_TXT = RANGO_TXT
 
 try:
-    EM, REC = load_emitidas_recibidas(periodo_sel)
-    sueldos_df = _construir_sueldos_desde_cierre(MES_ACTUAL)
-    costos_ref_df = load_costos_referencia(periodo_sel)
-    honorarios_aa_df = load_honorarios_aa(MES_ACTUAL)
-    ppto_mensual, ppto_acumulado, ppto_anual = load_presupuesto(MES_ACTUAL)
+    EM, REC = _cargar_rango(RANGO_PERIODOS)
+    sueldos_df = _sueldos_rango(RANGO_MESES_NUM)
+    costos_ref_df = _costos_rango(RANGO_PERIODOS)
+    honorarios_aa_df = _honorarios_rango(RANGO_MESES_NUM)
+    ppto_mensual = _presupuesto_rango(RANGO_MESES_NUM)
+    _, ppto_acumulado, ppto_anual = load_presupuesto(MES_ACTUAL)
     amex_alejandro_df = load_amex("ALEJANDRO")
     amex_josefa_df = load_amex("JOSEFA")
     amex_angelica_df = load_amex("ANGELICA")
@@ -990,6 +1058,12 @@ def _flujo_payload(es_ingreso, base_df, margen, margen_pct, cobertura, aduana_fi
     cumplimiento = tot_mes / ppto_mes_tot if ppto_mes_tot else None
     return {
         "tiene_ppto": tiene_ppto, "mes_txt": MES_TXT,
+        # Último mes del rango seleccionado -- el frontend lo usa para
+        # saber hasta dónde acumular en 'historial' (antes 'mes_txt' era
+        # un solo mes y servía para eso directo; ahora puede ser un rango
+        # como "Mayo - Agosto" que no empata con ningún mes de 'historial'
+        # tal cual, pedido del usuario, 2026-11-25).
+        "mes_fin_txt": PERIODOS[periodo_hasta]["mes_txt"],
         "kpis": {"tot_mes": tot_mes, "ppto_mes_tot": ppto_mes_tot, "ppto_acum_tot": ppto_acum_tot,
                 "n_contrapartes": n_contrapartes, "cumplimiento": cumplimiento,
                 "margen": margen, "margen_pct": margen_pct,
@@ -1032,40 +1106,32 @@ def _construir_arbol_nomina(sueldos_f):
                       "empleados": empleados})
     return arbol
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _uo_payload(periodo_sel):
+def _uo_payload(em_f, rec_f, sueldos_f, costos_f, honor_f, ppto_mensual, ppto_anual, aduanas_sel, mes_txt):
     """Utilidad Operativa por aduana -- regla confirmada con el usuario
     (2026-10-28): Ingreso = Emitidas + Honorarios AA; Utilidad = Ingreso -
     Sueldos - Gastos (Recibidas) - Costos de Referencia. Imile Laredo sale
     incompleta aqui (no tiene la hoja de P&L aparte que compensa que no
     factura por el SAT -- pendiente de conectar) -- se deja tal cual, no se
     inventa un ajuste.
-    Nunca se filtra por aduana (a proposito, ver comentario de mas abajo
-    donde se arma el payload) -- por eso esta funcion pide sus propios
-    datos COMPLETOS via los loaders ya cacheados (en vez de recibir las
-    variables EM/REC/sueldos_df/etc. ya filtradas del script principal) y
-    se cachea ella misma por periodo_sel. Antes se recalculaba entera en
-    cada rerun aunque solo hubiera cambiado el filtro de Aduana del
-    header, que no le afecta en nada -- esa era la causa principal de que
-    cambiar de aduana se sintiera lento (reportado por el usuario,
-    2026-11-24)."""
-    mes_num = PERIODOS[periodo_sel]["mes_num"]
-    mes_txt = PERIODOS[periodo_sel]["mes_txt"]
-    EM, REC = load_emitidas_recibidas(periodo_sel)
-    sueldos_df = _construir_sueldos_desde_cierre(mes_num)
-    costos_ref_df = load_costos_referencia(periodo_sel)
-    honorarios_aa_df = load_honorarios_aa(mes_num)
-    ppto_mensual, _, ppto_anual = load_presupuesto(mes_num)
-    tot_em = float(EM["importe"].sum())
-    tot_rec = float(REC["importe"].sum())
+    Ahora SÍ respeta el filtro de varias aduanas y el rango de periodos del
+    header (pedido del usuario, 2026-11-25; antes nunca se filtraba a
+    propósito) -- por eso recibe EM_F/REC_F/SUELDOS_F/COSTOS_F/HONOR_F ya
+    filtrados por el script principal (los mismos que usan Ingresos/
+    Gastos) en vez de volver a descargar todo sin filtrar. No está
+    decorada con @st.cache_data: lo pesado (descargas, merge de Sueldos
+    con el Cierre) ya está cacheado en los loaders de más abajo; esto solo
+    agrupa DataFrames ya chicos, y de cualquier forma debe recalcularse
+    cuando cambia el filtro ya que ahora el resultado depende de él."""
+    tot_em = float(em_f["importe"].sum())
+    tot_rec = float(rec_f["importe"].sum())
 
-    aduanas = set(EM["aduana"]) | set(REC["aduana"]) | set(sueldos_df["aduana"]) \
-            | set(costos_ref_df["aduana"]) | set(honorarios_aa_df["aduana"])
-    em_ad = EM.groupby("aduana")["importe"].sum()
-    rec_ad = REC.groupby("aduana")["importe"].sum()
-    sueldos_ad = sueldos_df.groupby("aduana")["total"].sum()
-    costos_ad = costos_ref_df.groupby("aduana")["monto"].sum()
-    honor_ad = honorarios_aa_df.groupby("aduana")["monto"].sum()
+    aduanas = set(em_f["aduana"]) | set(rec_f["aduana"]) | set(sueldos_f["aduana"]) \
+            | set(costos_f["aduana"]) | set(honor_f["aduana"])
+    em_ad = em_f.groupby("aduana")["importe"].sum()
+    rec_ad = rec_f.groupby("aduana")["importe"].sum()
+    sueldos_ad = sueldos_f.groupby("aduana")["total"].sum()
+    costos_ad = costos_f.groupby("aduana")["monto"].sum()
+    honor_ad = honor_f.groupby("aduana")["monto"].sum()
 
     por_aduana = []
     for aduana in sorted(aduanas):
@@ -1081,13 +1147,15 @@ def _uo_payload(periodo_sel):
 
     tiene_ppto = bool(ppto_mensual)
     def _ppto_utilidad_total(d):
-        return (_ppto_total(d, "ingresos") - _ppto_total(d, "costos")
-               - _ppto_total(d, "sueldos") - _ppto_total(d, "gastos"))
+        return (_ppto_total(d, "ingresos", aduanas_sel or None) - _ppto_total(d, "costos", aduanas_sel or None)
+               - _ppto_total(d, "sueldos", aduanas_sel or None) - _ppto_total(d, "gastos", aduanas_sel or None))
     ppto_por_aduana = []
     if tiene_ppto:
         aduanas_ppto = set()
         for concepto in ("ingresos", "costos", "sueldos", "gastos"):
             aduanas_ppto |= set(ppto_mensual.get(concepto, {}).keys())
+        if aduanas_sel:
+            aduanas_ppto &= set(aduanas_sel)
         for aduana in sorted(aduanas_ppto):
             ing = float(ppto_mensual.get("ingresos", {}).get(aduana, 0.0))
             cos = float(ppto_mensual.get("costos", {}).get(aduana, 0.0))
@@ -1105,8 +1173,8 @@ def _uo_payload(periodo_sel):
 
     def _concepto(real, clave_ppto):
         return {"real": real,
-               "ppto": _ppto_total(ppto_mensual, clave_ppto) if tiene_ppto and clave_ppto else None,
-               "ppto_anual": _ppto_total(ppto_anual, clave_ppto) if tiene_ppto and clave_ppto else None}
+               "ppto": _ppto_total(ppto_mensual, clave_ppto, aduanas_sel or None) if tiene_ppto and clave_ppto else None,
+               "ppto_anual": _ppto_total(ppto_anual, clave_ppto, aduanas_sel or None) if tiene_ppto and clave_ppto else None}
 
     estado_resultados = {
         "ingresos": _concepto(ingreso_total, "ingresos"),
@@ -1171,26 +1239,31 @@ if "nav" not in st.session_state:
     st.session_state["nav"] = "Utilidad Operativa"
 pagina = st.session_state["nav"]
 
-# Filtro de aduana (pedido por el usuario, 2026-10-30): aplica a Ingresos,
-# Gastos, Nómina y Tarjeta de Crédito -- Utilidad Operativa NUNCA se filtra,
-# sigue usando EM/REC/sueldos_df completos sin tocar.
+# Filtro de VARIAS aduanas a la vez (pedido del usuario, 2026-11-25: antes
+# solo se podía elegir una) -- aplica a las 5 pestañas, incluida Utilidad
+# Operativa (antes nunca se filtraba por aduana; cambio explícito del
+# usuario, 2026-11-25). Lista vacía = "Todas".
 ADUANAS_DISPONIBLES = sorted(
     set(EM["aduana"].dropna()) | set(REC["aduana"].dropna()) | set(sueldos_df["aduana"].dropna())
 )
-if "aduana_filtro" not in st.session_state:
-    st.session_state["aduana_filtro"] = "TODAS"
-aduana_sel = st.session_state["aduana_filtro"]
-if aduana_sel != "TODAS" and aduana_sel not in ADUANAS_DISPONIBLES:
-    aduana_sel = st.session_state["aduana_filtro"] = "TODAS"
+if "aduanas_filtro" not in st.session_state:
+    st.session_state["aduanas_filtro"] = []
+aduanas_sel = [a for a in st.session_state["aduanas_filtro"] if a in ADUANAS_DISPONIBLES]
+if aduanas_sel != st.session_state["aduanas_filtro"]:
+    st.session_state["aduanas_filtro"] = aduanas_sel
+# Tupla (hashable, orden estable) para los loaders cacheados que reciben
+# el filtro de aduana (historial_ingresos/historial_gastos via
+# _flujo_payload) -- None cuando no hay filtro, igual que antes.
+ADUANAS_FILTRO = tuple(sorted(aduanas_sel)) if aduanas_sel else None
 
-if aduana_sel == "TODAS":
+if not aduanas_sel:
     EM_F, REC_F, SUELDOS_F, HONOR_F, COSTOS_F = EM, REC, sueldos_df, honorarios_aa_df, costos_ref_df
 else:
-    EM_F = EM[EM["aduana"] == aduana_sel]
-    REC_F = REC[REC["aduana"] == aduana_sel]
-    SUELDOS_F = sueldos_df[sueldos_df["aduana"] == aduana_sel]
-    HONOR_F = honorarios_aa_df[honorarios_aa_df["aduana"] == aduana_sel]
-    COSTOS_F = costos_ref_df[costos_ref_df["aduana"] == aduana_sel]
+    EM_F = EM[EM["aduana"].isin(aduanas_sel)]
+    REC_F = REC[REC["aduana"].isin(aduanas_sel)]
+    SUELDOS_F = sueldos_df[sueldos_df["aduana"].isin(aduanas_sel)]
+    HONOR_F = honorarios_aa_df[honorarios_aa_df["aduana"].isin(aduanas_sel)]
+    COSTOS_F = costos_ref_df[costos_ref_df["aduana"].isin(aduanas_sel)]
 
 # Ingreso de la página "Ingresos" = Emitidas + Honorarios AA, misma fórmula
 # que ya se usaba en Utilidad Operativa (pedido 2026-11-05: "en la pestana
@@ -1230,17 +1303,17 @@ PERIODOS_DISPONIBLES = [{"clave": k, "mes_txt": v["mes_txt"]}
 _dash_payload = {
     "pagina_activa": pagina,
     "nav_opciones": NAV_OPCIONES,
-    "aduana_filtro": aduana_sel,
+    "aduanas_filtro": aduanas_sel,
     "aduanas_disponibles": ADUANAS_DISPONIBLES,
-    "periodo_filtro": periodo_sel,
+    "periodo_desde": periodo_desde,
+    "periodo_hasta": periodo_hasta,
     "periodos_disponibles": PERIODOS_DISPONIBLES,
-    "utilidad_operativa": _uo_payload(periodo_sel),
+    "utilidad_operativa": _uo_payload(EM_F, REC_F, SUELDOS_F, COSTOS_F, HONOR_F,
+                                      ppto_mensual, ppto_anual, aduanas_sel, RANGO_TXT),
     "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
-                              aduana_sel if aduana_sel != "TODAS" else None,
-                              costos_df=COSTOS_F, sueldos_df=SUELDOS_F),
+                              ADUANAS_FILTRO, costos_df=COSTOS_F, sueldos_df=SUELDOS_F),
     "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
-                                aduana_sel if aduana_sel != "TODAS" else None,
-                                honorarios_df=HONOR_F),
+                                ADUANAS_FILTRO, honorarios_df=HONOR_F),
     "nomina": _nomina_payload(SUELDOS_F, TOT_REC_F),
     "tarjeta_credito": _tarjeta_payload(),
     "colores": {"azul": JOCS_AZUL, "verde": JOCS_VERDE, "neg": C_NEG, "margen": C_MARGEN, "ppto": "#9DBFE8"},
@@ -1251,15 +1324,21 @@ if _dash_resultado:
     if _dash_resultado.get("nav_to") and _dash_resultado["nav_to"] != pagina:
         st.session_state["nav"] = _dash_resultado["nav_to"]
         _cambio = True
-    if _dash_resultado.get("aduana_to") is not None and _dash_resultado["aduana_to"] != aduana_sel:
-        st.session_state["aduana_filtro"] = _dash_resultado["aduana_to"]
+    if (_dash_resultado.get("aduanas_to") is not None
+            and sorted(_dash_resultado["aduanas_to"]) != sorted(aduanas_sel)):
+        st.session_state["aduanas_filtro"] = _dash_resultado["aduanas_to"]
         _cambio = True
-    if _dash_resultado.get("periodo_to") is not None and _dash_resultado["periodo_to"] != periodo_sel:
-        st.session_state["periodo_filtro"] = _dash_resultado["periodo_to"]
-        # Al cambiar de periodo, las aduanas disponibles pueden cambiar --
-        # se resetea a "TODAS" para no quedar filtrado a una aduana que no
-        # exista en el nuevo periodo (se revalida de todas formas arriba).
-        st.session_state["aduana_filtro"] = "TODAS"
+    if _dash_resultado.get("periodo_desde_to") is not None and _dash_resultado["periodo_desde_to"] != periodo_desde:
+        st.session_state["periodo_desde"] = _dash_resultado["periodo_desde_to"]
+        # Al cambiar el rango de periodos, las aduanas disponibles pueden
+        # cambiar -- se resetea a "Todas" para no quedar filtrado a una
+        # aduana que no exista en el nuevo rango (se revalida de todas
+        # formas arriba).
+        st.session_state["aduanas_filtro"] = []
+        _cambio = True
+    if _dash_resultado.get("periodo_hasta_to") is not None and _dash_resultado["periodo_hasta_to"] != periodo_hasta:
+        st.session_state["periodo_hasta"] = _dash_resultado["periodo_hasta_to"]
+        st.session_state["aduanas_filtro"] = []
         _cambio = True
     if _cambio:
         st.rerun()
