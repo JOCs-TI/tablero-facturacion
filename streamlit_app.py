@@ -1,4 +1,6 @@
 from io import BytesIO
+import concurrent.futures
+import time
 import pandas as pd
 import requests
 import streamlit as st
@@ -192,12 +194,43 @@ def fmt(v):
     s = "-$" if v < 0 else "$"
     return s + f"{abs(v):,.0f}"
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _descargar_sheet_drive(file_id):
+    """3 intentos con backoff -- al paralelizar las descargas
+    (_prefetch_drive) unas pocas empiezan a fallar con error SSL
+    ('Max retries exceeded'/'UNEXPECTED_EOF_WHILE_READING') si coinciden
+    demasiadas al mismo tiempo contra docs.google.com; un reintento breve
+    las resuelve sin tener que volver a bajar la concurrencia al punto de
+    perder la ganancia de velocidad."""
     url = f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx"
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    return resp.content
+    ultimo_error = None
+    for intento in range(3):
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            return resp.content
+        except requests.exceptions.RequestException as e:
+            ultimo_error = e
+            time.sleep(0.6 * (intento + 1))
+    raise ultimo_error
+
+def _prefetch_drive(file_ids):
+    """Dispara en paralelo las descargas de Drive que hagan falta para
+    esta corrida -- cada una ya está cacheada por su cuenta
+    (_descargar_sheet_drive, por file_id), pero antes se pedían una tras
+    otra: en frío (cache vacío, o un rango/mes nuevo) la ESPERA real era
+    la SUMA de las ~30-40 descargas secuenciales. Al lanzarlas a la vez,
+    el resultado es idéntico (cada una se guarda en su propio lugar del
+    caché) pero la espera baja a unas pocas tandas en paralelo en vez de
+    la suma de todas (pedido del usuario, 2026-11-25: "quiero optimizar
+    todos los tiempos de espera"). max_workers se queda deliberadamente
+    moderado (6) -- con más de ~10 a la vez, docs.google.com empieza a
+    cortar conexiones con error SSL en vez de responder más rápido."""
+    ids_unicos = sorted({fid for fid in file_ids if fid})
+    if not ids_unicos:
+        return
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(ids_unicos))) as ex:
+        list(ex.map(_descargar_sheet_drive, ids_unicos))
 
 # Julio nombra esta aduana "IMILE" a secas en vez de "IMILE AIFA" (archivos
 # de meses mas recientes ya usan el nombre completo) -- sin este alias, el
@@ -419,7 +452,7 @@ def _leer_efectivale(path, mes_txt):
     out["tipo_factura"] = "RECIBIDA"
     return out[out["importe"] != 0]
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _cargar_emitidas_periodo(periodo):
     """Solo la hoja EMITIDAS de un periodo, con sus reglas de desfase de
     IMILE AIFA/TMM ya aplicadas -- separado de load_emitidas_recibidas
@@ -466,7 +499,7 @@ def _cargar_emitidas_periodo(periodo):
     d = d[d["tipo_cc"] == "PROPIOS"]
     return d.reset_index(drop=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _cargar_recibidas_periodo(periodo):
     """Solo la hoja RECIBIDAS de un periodo -- separado de
     load_emitidas_recibidas (2026-11-18, mismo motivo que
@@ -494,7 +527,7 @@ def _cargar_recibidas_periodo(periodo):
     d = d[d["tipo_cc"] == "PROPIOS"]
     return d.reset_index(drop=True)
 
-@st.cache_data(ttl=300, show_spinner="Cargando facturación...")
+@st.cache_data(ttl=1800, show_spinner="Cargando facturación...")
 def load_emitidas_recibidas(periodo):
     """'periodo' es una clave de PERIODOS (ej. 'agosto', 'julio') -- mismas
     reglas para cualquier mes, solo cambian los archivos de origen (ver
@@ -506,7 +539,7 @@ def _mes_txt_completo(mes_num):
     cfg = next((c for c in PERIODOS.values() if c["mes_num"] == mes_num), None)
     return cfg["mes_txt"] if cfg else MES_COL_MAYUS[mes_num].capitalize()
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def historial_ingresos(aduanas_filtro=None):
     """Ingreso real (Emitidas + Honorarios AA) vs. Presupuesto de TODOS los
     periodos ya cargados (ver PERIODOS), no solo el mes seleccionado --
@@ -541,7 +574,7 @@ def historial_ingresos(aduanas_filtro=None):
         filas.append({"mes": _mes_txt_completo(mes_num), "real": real, "ppto": ppto})
     return filas
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def historial_gastos(aduanas_filtro=None):
     """Mismo concepto que historial_ingresos pero para 'Tendencia de
     gasto' (pedido del usuario, 2026-11-18, "igual con este" sobre la
@@ -582,11 +615,23 @@ def historial_gastos(aduanas_filtro=None):
         filas.append({"mes": _mes_txt_completo(mes_num), "real": real, "ppto": ppto, "variacion": variacion})
     return filas
 
-@st.cache_data(ttl=300, show_spinner=False)
-def load_sueldos(mes_num):
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cargar_sueldos_acumulado_crudo():
+    """Lee la pestaña 'ACUMULADO' (los 12 meses juntos) una sola vez --
+    antes load_sueldos(mes_num) volvía a descargar y re-parsear esta
+    MISMA pestaña por cada mes distinto que se le pidiera; con
+    historial_ingresos/historial_gastos pidiendo los 12 meses en cada
+    corrida, eso eran 12 parseos completos en vez de 1 (pedido del
+    usuario, 2026-11-25: "quiero optimizar todos los tiempos de
+    espera")."""
     path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["sueldos"]))
     df = pd.read_excel(path, sheet_name="ACUMULADO", header=0)
     df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_sueldos(mes_num):
+    df = _cargar_sueldos_acumulado_crudo()
     df = df[df["MES NO."] == mes_num].copy()
     out = pd.DataFrame(index=df.index)
     out["nombre"] = coalesce_col(df, "nombre corregido", "NOMBRE").map(norm_txt)
@@ -603,7 +648,7 @@ CIERRE_ADUANAS = ["FEDEX", "Veracruz", "CDMX", "Laredo", "Manzanillo", "Lazaro C
                    "Toluca BSO", "AIFA", "ESTAFETA", "Transito", "DHL", "iMile AIFA",
                    "Imile LAREDO", "TMM", "Mexicali", "Tijuana", "Amazon 1", "Amazon 2", "STAFF"]
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_cierre_sueldos():
     """Sheet 'CIERRE CARGA AEREA - 2026' compartido por el usuario
     (2026-11-19): una pestaña por aduana, cada una con su propio bloque
@@ -617,14 +662,20 @@ def load_cierre_sueldos():
     que solo cubria TMM con un peso fijo); hay que leer el valor ya
     resuelto tal cual, mes por mes. Reemplaza por completo ese enfoque
     anterior.
-    Devuelve columnas: aduana, nombre, mes_num, monto."""
+    Devuelve columnas: aduana, nombre, mes_num, monto.
+    'xls.parse(hoja)' en vez de 'pd.read_excel(path, sheet_name=hoja)' --
+    pasarle el mismo BytesIO a read_excel en cada vuelta del for hacía que
+    pandas reabriera y re-parseara el archivo COMPLETO (las 25 pestañas)
+    19 veces, una por cada aduana -- con ExcelFile se abre una sola vez y
+    cada .parse() solo lee la pestaña pedida (pedido del usuario,
+    2026-11-25: "quiero optimizar todos los tiempos de espera")."""
     path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["cierre_carga_aerea"]))
+    xls = pd.ExcelFile(path)
     filas = []
     for hoja in CIERRE_ADUANAS:
-        try:
-            df = pd.read_excel(path, sheet_name=hoja, header=None)
-        except Exception:
+        if hoja not in xls.sheet_names:
             continue
+        df = xls.parse(sheet_name=hoja, header=None)
         mask_header = df.apply(lambda col: col.astype(str).str.strip().str.upper() == "SUELDOS")
         filas_header = df.index[mask_header.any(axis=1)].tolist()
         if not filas_header:
@@ -654,7 +705,7 @@ def load_cierre_sueldos():
                                   "mes_num": mes_num, "monto": float(monto)})
     return pd.DataFrame(filas, columns=["aduana", "nombre", "mes_num", "monto"])
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _construir_sueldos_desde_cierre(mes_num):
     """Combina el detalle de load_sueldos() (9 componentes de la Ficha
     Tecnica, por quincena) con el reparto por aduana de
@@ -715,7 +766,7 @@ def _construir_sueldos_desde_cierre(mes_num):
         filas.append(fila)
     return pd.DataFrame(filas).reset_index(drop=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_costos_referencia(periodo):
     """Pestaña real 'Reporte de Facturas'. La columna 'Aduana' trae un código
     numérico que ni siquiera es único por aduana (confirmado con el usuario)
@@ -739,16 +790,24 @@ def load_costos_referencia(periodo):
     out["monto"] = pd.to_numeric(coalesce_col(df, "0.2"), errors="coerce").fillna(0.0)
     return out[out["monto"] != 0].reset_index(drop=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cargar_honorarios_aa_crudo():
+    """Lee la pestaña 'Detalle' completa (los 12 meses juntos) una sola
+    vez -- mismo motivo que _cargar_sueldos_acumulado_crudo (pedido del
+    usuario, 2026-11-25: optimizar tiempos de espera)."""
+    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["honorarios_aa"]))
+    df = pd.read_excel(path, sheet_name="Detalle", header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_honorarios_aa(mes_num):
     """Pestaña 'Detalle' -- ya trae el nombre de la aduana directo (columna
     'NOMBRE ADUANA', no un código). Se filtra a mes_num (columna 'Mes'
     viene mezclada int/str en el archivo, por eso el cast a str antes de
     comparar). Solo se cuentan facturas con Estatus 'Timbrada'; las demás
     (Emitida, Cancelada, Cobrada) no se consideran honorario devengado."""
-    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["honorarios_aa"]))
-    df = pd.read_excel(path, sheet_name="Detalle", header=0)
-    df.columns = [str(c).strip() for c in df.columns]
+    df = _cargar_honorarios_aa_crudo()
     df = df[df["Mes"].astype(str) == str(mes_num)].copy()
     estatus = coalesce_col(df, "Estatus").map(norm_txt)
     df = df[estatus.map(lambda s: isinstance(s, str) and s.strip().upper() == "TIMBRADA")]
@@ -827,16 +886,27 @@ def _leer_bloques_presupuesto_anual(ws, meses_idx):
         i += 1
     return resultado
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
+def _cargar_presupuesto_todos_los_meses():
+    """Parsea el workbook de Presupuestos completo UNA sola vez, para los
+    12 meses a la vez -- antes load_presupuesto(mes_num) reabría y
+    reparseaba el workbook entero (con openpyxl, el motor más lento de
+    los dos) por cada mes distinto que se le pidiera; historial_ingresos/
+    historial_gastos piden los 12 meses en cada corrida, eran 12 parseos
+    completos del mismo archivo en vez de 1 (pedido del usuario,
+    2026-11-25: "quiero optimizar todos los tiempos de espera")."""
+    import openpyxl
+    contenido = _descargar_sheet_drive(DRIVE_SHEET_IDS["presupuestos_2026"])
+    wb = openpyxl.load_workbook(BytesIO(contenido), data_only=True)
+    return _leer_bloques_presupuesto_anual(wb[wb.sheetnames[0]], list(range(1, 13)))
+
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_presupuesto(mes_num):
     """Regresa (mensual, acumulado, ppto_anual) del mes dado -- cada uno
     {concepto: {aduana: valor}}. 'ppto_anual' es el acumulado a DICIEMBRE
     (el total real del año completo según el presupuesto, ya no una
     proyección como antes del reset)."""
-    import openpyxl
-    contenido = _descargar_sheet_drive(DRIVE_SHEET_IDS["presupuestos_2026"])
-    wb = openpyxl.load_workbook(BytesIO(contenido), data_only=True)
-    resultado = _leer_bloques_presupuesto_anual(wb[wb.sheetnames[0]], [mes_num, 12])
+    resultado = _cargar_presupuesto_todos_los_meses()
     mensual, acumulado = resultado[mes_num]
     _, ppto_anual = resultado[12]
     return mensual, acumulado, ppto_anual
@@ -860,7 +930,7 @@ UUID_RE = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{
 def _extraer_uuids(celda):
     return UUID_RE.findall(celda) if isinstance(celda, str) else []
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_amex(persona):
     col_uuid = AMEX_COL_UUID[persona]
     path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS[f"amex_{persona.lower()}"]))
@@ -886,7 +956,7 @@ def load_amex(persona):
 # descargar nada que ya estuviera en caché. Se cachean también por su
 # cuenta, por la tupla de periodos/meses, para no repetir el concat/suma
 # en cada rerun si el rango no cambió.
-@st.cache_data(ttl=300, show_spinner="Cargando facturación...")
+@st.cache_data(ttl=1800, show_spinner="Cargando facturación...")
 def _cargar_rango(claves_periodos):
     ems, recs = [], []
     for clave in claves_periodos:
@@ -895,19 +965,19 @@ def _cargar_rango(claves_periodos):
         recs.append(rec)
     return pd.concat(ems, ignore_index=True), pd.concat(recs, ignore_index=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _sueldos_rango(meses_num):
     return pd.concat([_construir_sueldos_desde_cierre(m) for m in meses_num], ignore_index=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _costos_rango(claves_periodos):
     return pd.concat([load_costos_referencia(c) for c in claves_periodos], ignore_index=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _honorarios_rango(meses_num):
     return pd.concat([load_honorarios_aa(m) for m in meses_num], ignore_index=True)
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def _presupuesto_rango(meses_num):
     """Suma el presupuesto MENSUAL de cada mes del rango, concepto por
     concepto y aduana por aduana. El 'acumulado' (desde Enero) y el
@@ -952,6 +1022,28 @@ RANGO_TXT = (PERIODOS[periodo_desde]["mes_txt"] if periodo_desde == periodo_hast
 MES_TXT = RANGO_TXT
 
 try:
+    # Dispara en paralelo TODAS las descargas de Drive que va a necesitar
+    # esta corrida -- de TODOS los periodos definidos (no solo el rango
+    # activo), porque historial_ingresos/historial_gastos siempre recorren
+    # los 12 meses para la gráfica de tendencia, sin importar qué rango
+    # esté filtrado. Más los compartidos entre todos los meses (Sueldos,
+    # Honorarios AA, Presupuesto, Cierre Carga Aérea, Efectivale, los 3
+    # AMEX). Por su cuenta cada loader de abajo ya los pide tal cual (y ya
+    # quedan en caché de _descargar_sheet_drive), así que esto no cambia
+    # ningún resultado -- solo adelanta la espera de red para que ya estén
+    # calientes cuando cada loader los pida.
+    _archivos_por_periodo = []
+    for _cfg in PERIODOS.values():
+        _archivos_por_periodo += [
+            _cfg.get("emitidas_recibidas"), _cfg.get("emitidas_recibidas_siguiente"),
+            _cfg.get("corresponsalias"), _cfg.get("costos_de_referencia"),
+            _cfg.get("imile_monto2_desde"), _cfg.get("imile_monto1_desde"),
+        ]
+    _archivos_compartidos = [DRIVE_SHEET_IDS[k] for k in (
+        "sueldos", "honorarios_aa", "presupuestos_2026", "cierre_carga_aerea",
+        "efectivale", "amex_alejandro", "amex_josefa", "amex_angelica")]
+    _prefetch_drive(_archivos_por_periodo + _archivos_compartidos)
+
     EM, REC = _cargar_rango(RANGO_PERIODOS)
     sueldos_df = _sueldos_rango(RANGO_MESES_NUM)
     costos_ref_df = _costos_rango(RANGO_PERIODOS)
@@ -1300,6 +1392,14 @@ st.markdown("""<style>
 PERIODOS_DISPONIBLES = [{"clave": k, "mes_txt": v["mes_txt"]}
                         for k, v in sorted(PERIODOS.items(), key=lambda kv: kv[1]["mes_num"])]
 
+_uo_pl = _uo_payload(EM_F, REC_F, SUELDOS_F, COSTOS_F, HONOR_F, ppto_mensual, ppto_anual, aduanas_sel, RANGO_TXT)
+_gastos_pl = _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
+                            ADUANAS_FILTRO, costos_df=COSTOS_F, sueldos_df=SUELDOS_F)
+_ingresos_pl = _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
+                              ADUANAS_FILTRO, honorarios_df=HONOR_F)
+_nomina_pl = _nomina_payload(SUELDOS_F, TOT_REC_F)
+_tarjeta_pl = _tarjeta_payload()
+
 _dash_payload = {
     "pagina_activa": pagina,
     "nav_opciones": NAV_OPCIONES,
@@ -1308,14 +1408,11 @@ _dash_payload = {
     "periodo_desde": periodo_desde,
     "periodo_hasta": periodo_hasta,
     "periodos_disponibles": PERIODOS_DISPONIBLES,
-    "utilidad_operativa": _uo_payload(EM_F, REC_F, SUELDOS_F, COSTOS_F, HONOR_F,
-                                      ppto_mensual, ppto_anual, aduanas_sel, RANGO_TXT),
-    "gastos": _flujo_payload(False, REC_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
-                              ADUANAS_FILTRO, costos_df=COSTOS_F, sueldos_df=SUELDOS_F),
-    "ingresos": _flujo_payload(True, EM_F, MARGEN_F, MARGEN_PCT_F, COBERTURA_F,
-                                ADUANAS_FILTRO, honorarios_df=HONOR_F),
-    "nomina": _nomina_payload(SUELDOS_F, TOT_REC_F),
-    "tarjeta_credito": _tarjeta_payload(),
+    "utilidad_operativa": _uo_pl,
+    "gastos": _gastos_pl,
+    "ingresos": _ingresos_pl,
+    "nomina": _nomina_pl,
+    "tarjeta_credito": _tarjeta_pl,
     "colores": {"azul": JOCS_AZUL, "verde": JOCS_VERDE, "neg": C_NEG, "margen": C_MARGEN, "ppto": "#9DBFE8"},
 }
 _dash_resultado = _dashboard_component(datos=_dash_payload, key="fac_dashboard", default=None)
