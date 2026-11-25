@@ -34,6 +34,9 @@ html, body { margin: 0; padding: 0; background: var(--bg); font-family: 'Segoe U
 .filtro-pill .fp-label { font-size: 10px; color: var(--sub); display: block; }
 .filtro-pill .fp-value { font-size: 12px; color: var(--text); font-weight: 700; display: block; }
 .filtro-pill select.fp-select { font: inherit; font-size: 12px; color: var(--text); font-weight: 700; border: none; background: transparent; outline: none; cursor: pointer; appearance: none; padding: 0; margin: 0; }
+.fp-toggle { display: flex; gap: 6px; margin-bottom: 1px; }
+.fp-toggle span { font-size: 10px; color: var(--sub); cursor: pointer; }
+.fp-toggle span.active { color: var(--azul); font-weight: 700; }
 .grid-row { display: grid; gap: 16px; margin-bottom: 16px; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; box-shadow: 0 1px 3px rgba(16,24,40,0.06); height: 100%; }
 .card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 2px; }
@@ -944,6 +947,46 @@ function AduanaMultiSelect(props) {
     ) : null);
 }
 
+function PeriodoFiltro(props) {
+  // Filtro de periodo separado en dos modos (pedido del usuario, 2026-11-25):
+  // "Mes" = un solo mes con un unico <select>; "Rango" = periodo con
+  // "desde"/"hasta". El modo es estado local, no se manda a Python: solo
+  // decide que selects se muestran. Al pasar de "Rango" a "Mes" se colapsa
+  // el filtro al mes "hasta" actual para que quede consistente.
+  const { periodoDesde, periodoHasta, periodosDisp, onCambio } = props;
+  const [modo, setModo] = useState(periodoDesde === periodoHasta ? "mes" : "rango");
+
+  function cambiarModo(nuevo) {
+    if (nuevo === modo) return;
+    setModo(nuevo);
+    if (nuevo === "mes" && periodoDesde !== periodoHasta) onCambio(periodoHasta, periodoHasta);
+  }
+
+  const opciones = periodosDisp.map((p) => h("option", { key: p.clave, value: p.clave }, p.mes_txt));
+
+  return h("div", { className: "filtro-pill" },
+    h("span", {}, ICONOS.calendar),
+    h("span", {},
+      h("div", { className: "fp-toggle" },
+        h("span", { className: modo === "mes" ? "active" : "", onClick: () => cambiarModo("mes") }, "Mes"),
+        h("span", { className: modo === "rango" ? "active" : "", onClick: () => cambiarModo("rango") }, "Rango")),
+      modo === "mes"
+        ? h("select", {
+            className: "fp-select", value: periodoHasta,
+            onChange: (e) => onCambio(e.target.value, e.target.value),
+          }, opciones)
+        : h("span", { style: { display: "flex", alignItems: "center", gap: 4 } },
+            h("select", {
+              className: "fp-select", value: periodoDesde,
+              onChange: (e) => onCambio(e.target.value, periodoHasta),
+            }, opciones),
+            h("span", { style: { fontSize: 11, color: "var(--sub)" } }, "a"),
+            h("select", {
+              className: "fp-select", value: periodoHasta,
+              onChange: (e) => onCambio(periodoDesde, e.target.value),
+            }, opciones))));
+}
+
 const TABS = [
   { key: "Utilidad Operativa", icono: "chart", titulo: "Utilidad Operativa", subtitulo: "Tablero Carga-Aérea" },
   { key: "Ingresos", icono: "chart", titulo: "Análisis de Ingresos", subtitulo: "Comportamiento, composición y principales generadores de ingresos" },
@@ -985,29 +1028,17 @@ function App(props) {
   const tituloHeader = h("div", {}, h("h1", {}, activa.titulo), h("p", {}, activa.subtitulo));
   const headerLeft = h("div", { className: "dash-header-left" }, iconoHeader, tituloHeader);
 
-  const pillPeriodo = h("div", { className: "filtro-pill" },
-    h("span", {}, ICONOS.calendar),
-    h("span", {},
-      h("span", { className: "fp-label" }, "Periodo"),
-      h("span", { style: { display: "flex", alignItems: "center", gap: 4 } },
-        h("select", {
-          className: "fp-select", value: periodoDesde,
-          onChange: (e) => Streamlit.setComponentValue({ periodo_desde_to: e.target.value, periodo_hasta_to: periodoHasta, nav_to: tab }),
-        },
-          periodosDisp.map((p) => h("option", { key: p.clave, value: p.clave }, p.mes_txt))),
-        h("span", { style: { fontSize: 11, color: "var(--sub)" } }, "a"),
-        h("select", {
-          className: "fp-select", value: periodoHasta,
-          onChange: (e) => Streamlit.setComponentValue({ periodo_desde_to: periodoDesde, periodo_hasta_to: e.target.value, nav_to: tab }),
-        },
-          periodosDisp.map((p) => h("option", { key: p.clave, value: p.clave }, p.mes_txt))))));
+  const pillPeriodo = h(PeriodoFiltro, {
+    periodoDesde, periodoHasta, periodosDisp,
+    onCambio: (desde, hasta) => Streamlit.setComponentValue({ periodo_desde_to: desde, periodo_hasta_to: hasta, nav_to: tab }),
+  });
   const pillAnio = h("div", { className: "filtro-pill" },
     h("span", {}, ICONOS.year),
     h("span", {}, h("span", { className: "fp-label" }, "Año"), h("span", { className: "fp-value" }, "2026")));
 
   const pillAduana = h(AduanaMultiSelect, {
     opciones: aduanasDisp, seleccion: aduanasFiltro,
-    onCambio: (nueva) => { console.log("DEBUG onCambio envia", JSON.stringify(nueva)); Streamlit.setComponentValue({ aduanas_to: nueva, nav_to: tab }); },
+    onCambio: (nueva) => Streamlit.setComponentValue({ aduanas_to: nueva, nav_to: tab }),
   });
 
   const headerRight = h("div", { style: { display: "flex", gap: 10 } }, pillPeriodo, pillAnio, pillAduana);
