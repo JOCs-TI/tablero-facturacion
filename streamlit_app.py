@@ -644,6 +644,12 @@ def load_sueldos(mes_num):
 
 BUCKETS_PERSONAL_CC = ["IMILE AIFA", "IMILE LAREDO", "TMM", "MULTIADUANAS", "ESTAFETA", "OTROS"]
 
+# "MULTIADUANAS" no es una aduana real -- el usuario confirmo (2026-11-25,
+# tras ver que el Cierre viejo traia notas sueltas como "40% en toluca" /
+# "Toluca" en varias personas con fraccion en este cubo) que se trate como
+# sinonimo de la aduana real TOLUCA, para todos los casos.
+ALIAS_BUCKET_PERSONAL_CC = {"MULTIADUANAS": "TOLUCA"}
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_personal_cc():
     """Hoja 'Personal por CC' compartida por el usuario (2026-11-25):
@@ -695,25 +701,43 @@ def _fracciones_personal_cc(nombre_norm, reglas, tmm_tiene_ingresos):
         return None
     return fracciones
 
-def _aduanas_reales_del_mes(mes_num):
-    """Aduanas 'de verdad' (las que ya existen en Emitidas/Recibidas de ese
-    mes) -- se usan como RESPALDO del Departamento solo cuando Personal por
-    CC no trae una regla usable para esa persona (el usuario confirmo que
-    Personal por CC manda siempre que la tenga, 2026-11-25, tras ver que 17
-    de 65 personas revisadas tienen un Departamento real valido que no
-    coincide con su regla -- ej. 21 personas marcadas 'TOLUCA' en nomina
-    que Personal por CC reparte entre otras aduanas). Tambien regresa si
-    TMM tuvo Emitidas > 0 ese mes, para resolver el escenario condicional
-    de Personal por CC."""
+@st.cache_data(ttl=1800, show_spinner=False)
+def _aduanas_reales_conocidas():
+    """Union de aduanas que aparecen en Emitidas/Recibidas de TODOS los
+    periodos ya cargados en PERIODOS -- se usan como RESPALDO del
+    Departamento de Sueldos solo cuando Personal por CC no trae una regla
+    usable para esa persona (el usuario confirmo que Personal por CC manda
+    siempre que la tenga, 2026-11-25, tras ver que 17 de 65 personas
+    revisadas tienen un Departamento real valido que no coincide con su
+    regla -- ej. 21 personas marcadas 'TOLUCA' en nomina que Personal por
+    CC reparte entre otras aduanas). Es un dato estable de la empresa (los
+    nombres de aduana no cambian de un mes a otro) -- por eso NO hace falta
+    que el mes que se esta calculando ya tenga su propio archivo de
+    Emitidas/Recibidas en PERIODOS: esto deja que Sueldos calcule un mes
+    que ACUMULADO ya trae pero que el tablero todavia no integra (ej.
+    Septiembre antes de tener Corresponsalias listo, 2026-11-25: 'pero
+    como tal ya me puedes dar numeros de sueldos de septiembre?')."""
+    aduanas = set()
+    for clave in PERIODOS:
+        em = _cargar_emitidas_periodo(clave)
+        rec = _cargar_recibidas_periodo(clave)
+        aduanas |= set(em["aduana"].dropna()) | set(rec["aduana"].dropna())
+    return aduanas
+
+def _tmm_tiene_ingresos_del_mes(mes_num):
+    """Si la aduana TMM tuvo Emitidas > 0 ese mes -- resuelve el escenario
+    condicional 'SI INGRESOS TMM > 0/<= 0' de Personal por CC. A diferencia
+    de _aduanas_reales_conocidas, esto SI es un dato propio de cada mes;
+    si ese mes todavia no tiene su periodo en PERIODOS (ej. Septiembre
+    recien agregado a Sueldos pero sin Emitidas propia todavia) se asume
+    'sin ingresos' por defecto, a falta de un dato mejor -- se actualiza
+    solo en cuanto el periodo se agregue a PERIODOS."""
     mes_num_a_clave = {cfg["mes_num"]: clave for clave, cfg in PERIODOS.items()}
     clave = mes_num_a_clave.get(mes_num)
     if not clave:
-        return set(), False
+        return False
     em = _cargar_emitidas_periodo(clave)
-    rec = _cargar_recibidas_periodo(clave)
-    aduanas = set(em["aduana"].dropna()) | set(rec["aduana"].dropna())
-    tmm_tiene_ingresos = float(em.loc[em["aduana"] == "TMM", "importe"].sum()) > 0
-    return aduanas, tmm_tiene_ingresos
+    return float(em.loc[em["aduana"] == "TMM", "importe"].sum()) > 0
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _construir_sueldos_por_aduana(mes_num):
@@ -721,7 +745,7 @@ def _construir_sueldos_por_aduana(mes_num):
     mano en un Cierre (reemplaza _construir_sueldos_desde_cierre /
     load_cierre_sueldos, 2026-11-25). Prioridad confirmada con el usuario
     tras encontrar 17 casos de conflicto en agosto (ver
-    _aduanas_reales_del_mes):
+    _aduanas_reales_conocidas):
       1. Si Personal por CC trae una regla usable para la persona (fraccion
          > 0 en algun cubo), esa manda SIEMPRE -- aunque el Departamento de
          Sueldos ya sea una aduana real distinta.
@@ -749,7 +773,8 @@ def _construir_sueldos_por_aduana(mes_num):
     agg["aduana"] = "first"
     resumen = base.groupby("nombre_norm").agg(agg)
 
-    aduanas_reales, tmm_tiene_ingresos = _aduanas_reales_del_mes(mes_num)
+    aduanas_reales = _aduanas_reales_conocidas()
+    tmm_tiene_ingresos = _tmm_tiene_ingresos_del_mes(mes_num)
     reglas_cc = load_personal_cc()
 
     filas = []
@@ -759,7 +784,8 @@ def _construir_sueldos_por_aduana(mes_num):
             for bucket, fraccion in fracciones.items():
                 if fraccion <= 0:
                     continue
-                fila = {"nombre": nombre_norm, "aduana": bucket, "total": fila_base["total"] * fraccion}
+                aduana_destino = ALIAS_BUCKET_PERSONAL_CC.get(bucket, bucket)
+                fila = {"nombre": nombre_norm, "aduana": aduana_destino, "total": fila_base["total"] * fraccion}
                 for c in cols_num:
                     fila[c] = fila_base[c] * fraccion
                 filas.append(fila)
