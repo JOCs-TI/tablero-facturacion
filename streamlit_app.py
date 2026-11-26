@@ -142,16 +142,15 @@ DRIVE_SHEET_IDS = {
     "amex_josefa": "1MQyjGwAHgRSMBJdZ_HFGskhplB2tk1JdDo2oY-6tzZ0",
     "amex_angelica": "1OewXOKinbq6cOxedrb6NIiaeF3385eCrbmzZFdtBM-0",
     "efectivale": "1NE0MG2qaY8k9uiSwRPviqXEfa9uIOezHsHGSg8KruNY",
-    "cierre_carga_aerea": "1D-j0uQqJ0fI3PF9xpFRoQn6XeyngZCRS_sKhEUgSIqU",
+    # Hoja "Personal por CC" (2026-11-25): reemplaza el Cierre Carga Aerea
+    # como fuente del reparto de Sueldos por aduana, ver
+    # _construir_sueldos_por_aduana. PINEDA BERNAL ZUGELY y GONZALEZ
+    # SAMANTHA, antes excluidas de Sueldos por duplicar un monto aparte del
+    # P&L de Imile Laredo (2026-11-19), ya vienen en esta hoja como
+    # empleados normales -- el usuario confirmo usarla tal cual, sin esa
+    # exclusion (2026-11-25).
+    "personal_por_cc": "1C1hLZKi7dKO2OH40WKqjhWKKmHKIPQIirgzmql9TUJA",
 }
-
-# Dos filas de la hoja 'sueldos' (Departamento=IMILE LAREDO) y del Sheet
-# 'cierre_carga_aerea' (pestaña Imile LAREDO) con nombres que NO son
-# empleados reales -- su monto coincide exacto con el de Sueldos que ya
-# trae el P&L aparte de Imile Laredo (ver load_imile_laredo_extra), serian
-# un duplicado si se contaran. El usuario confirmo excluirlos de Sueldos
-# por completo, en ambas fuentes (2026-11-19).
-EMPLEADOS_EXCLUIR_SUELDOS = {"PINEDA BERNAL ZUGELY", "GONZALEZ SAMANTHA"}
 
 CONCEPTO_PRESUPUESTO = {"INGRESOS": "ingresos", "CTO REF": "costos",
                         "SUELDOS": "sueldos", "GASTOS OP": "gastos"}
@@ -601,7 +600,7 @@ def historial_gastos(aduanas_filtro=None):
             # gasto"). Corresponsalias/Efectivale ya vienen dentro de
             # Recibidas (ver _cargar_recibidas_periodo).
             costos = load_costos_referencia(clave)
-            sueldos = _construir_sueldos_desde_cierre(mes_num)
+            sueldos = _construir_sueldos_por_aduana(mes_num)
             if aduanas_filtro:
                 recibidas = recibidas[recibidas["aduana"].isin(aduanas_filtro)]
                 costos = costos[costos["aduana"].isin(aduanas_filtro)]
@@ -641,91 +640,106 @@ def load_sueldos(mes_num):
         out[col_src] = pd.to_numeric(coalesce_col(df, col_src), errors="coerce").fillna(0.0)
     out["total"] = pd.to_numeric(coalesce_col(df, "TOTAL2", "Total"), errors="coerce").fillna(0.0)
     out = out[out["nombre"].notna() & (out["total"] != 0)]
-    excluir = out["nombre"].map(_normaliza_nombre).isin(EMPLEADOS_EXCLUIR_SUELDOS)
-    return out[~excluir].reset_index(drop=True)
+    return out.reset_index(drop=True)
 
-CIERRE_ADUANAS = ["FEDEX", "Veracruz", "CDMX", "Laredo", "Manzanillo", "Lazaro Cardenas",
-                   "Toluca BSO", "AIFA", "ESTAFETA", "Transito", "DHL", "iMile AIFA",
-                   "Imile LAREDO", "TMM", "Mexicali", "Tijuana", "Amazon 1", "Amazon 2", "STAFF"]
+BUCKETS_PERSONAL_CC = ["IMILE AIFA", "IMILE LAREDO", "TMM", "MULTIADUANAS", "ESTAFETA", "OTROS"]
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def load_cierre_sueldos():
-    """Sheet 'CIERRE CARGA AEREA - 2026' compartido por el usuario
-    (2026-11-19): una pestaña por aduana, cada una con su propio bloque
-    SUELDOS -- una fila por empleado con el monto YA resuelto por mes (no
-    un porcentaje que haya que calcular). Es la fuente de verdad del
-    reparto real de cada persona entre aduanas: el usuario confirmo que el
-    split de una persona puede cambiar de mes a mes de forma no uniforme
-    (ej. 100% una aduana de enero a abril, 80/20 de mayo a agosto si entra
-    TMM, y puede volver a cambiar despues) -- no es modelable con una
-    formula tipo 'si hubiera' (asi se intento primero con personal_cc.xlsx,
-    que solo cubria TMM con un peso fijo); hay que leer el valor ya
-    resuelto tal cual, mes por mes. Reemplaza por completo ese enfoque
-    anterior.
-    Devuelve columnas: aduana, nombre, mes_num, monto.
-    'xls.parse(hoja)' en vez de 'pd.read_excel(path, sheet_name=hoja)' --
-    pasarle el mismo BytesIO a read_excel en cada vuelta del for hacía que
-    pandas reabriera y re-parseara el archivo COMPLETO (las 25 pestañas)
-    19 veces, una por cada aduana -- con ExcelFile se abre una sola vez y
-    cada .parse() solo lee la pestaña pedida (pedido del usuario,
-    2026-11-25: "quiero optimizar todos los tiempos de espera")."""
-    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["cierre_carga_aerea"]))
-    xls = pd.ExcelFile(path)
-    filas = []
-    for hoja in CIERRE_ADUANAS:
-        if hoja not in xls.sheet_names:
+def load_personal_cc():
+    """Hoja 'Personal por CC' compartida por el usuario (2026-11-25):
+    reemplaza al Cierre Carga Aerea como fuente del reparto de Sueldos por
+    aduana (ver _construir_sueldos_por_aduana) -- una fila por empleado con
+    su fraccion fija en cada uno de los 6 "cubos" (BUCKETS_PERSONAL_CC), o
+    2 filas (mismo nombre) cuando el reparto depende de si la aduana TMM
+    tuvo ingresos ese mes ('SI INGRESOS TMM > 0' / '<= 0', confirmado con
+    el usuario que la fuente es Emitidas de TMM). Las filas en escenario
+    'PENDIENTE' o 'NO APLICA' ya traen 0.0 en las 6 fracciones -- no hace
+    falta un caso especial, _fracciones_personal_cc las deja sin repartir
+    solas. Un escenario que rota (ej. 'PERIODO A/B') no se puede resolver
+    sin un calendario que el usuario aun no tiene -- se deja pendiente
+    tambien (2026-11-25: "dejalas como pendientes, y los voy
+    actualizando")."""
+    path = BytesIO(_descargar_sheet_drive(DRIVE_SHEET_IDS["personal_por_cc"]))
+    df = pd.read_excel(path, sheet_name="Personal por CC", header=0)
+    df.columns = [str(c).strip() for c in df.columns]
+    reglas = {}
+    for _, r in df.iterrows():
+        nombre_norm = _normaliza_nombre(r.get("EMPLEADO"))
+        if not nombre_norm:
             continue
-        df = xls.parse(sheet_name=hoja, header=None)
-        mask_header = df.apply(lambda col: col.astype(str).str.strip().str.upper() == "SUELDOS")
-        filas_header = df.index[mask_header.any(axis=1)].tolist()
-        if not filas_header:
-            continue
-        header_idx = filas_header[0]
-        header_row = df.loc[header_idx]
-        col_nombre = header_row[header_row.astype(str).str.strip().str.upper() == "SUELDOS"].index[0]
-        cols_mes = {}
-        for mes_num, mes_txt in MES_COL_MAYUS.items():
-            coincide = header_row[header_row.astype(str).str.strip().str.upper() == mes_txt].index
-            if len(coincide):
-                cols_mes[mes_num] = coincide[0]
-        aduana_dest = ALIAS_ADUANA_PPTO.get(_normaliza_aduana(hoja), _normaliza_aduana(hoja))
-        for i in range(header_idx + 1, len(df)):
-            nombre_raw = df.loc[i, col_nombre]
-            if not isinstance(nombre_raw, str) or not nombre_raw.strip():
-                continue
-            if nombre_raw.strip().upper().startswith("TOTAL"):
-                break
-            nombre_norm = _normaliza_nombre(nombre_raw)
-            if nombre_norm in EMPLEADOS_EXCLUIR_SUELDOS:
-                continue
-            for mes_num, col in cols_mes.items():
-                monto = pd.to_numeric(df.loc[i, col], errors="coerce")
-                if pd.notna(monto) and monto != 0:
-                    filas.append({"aduana": aduana_dest, "nombre": nombre_norm,
-                                  "mes_num": mes_num, "monto": float(monto)})
-    return pd.DataFrame(filas, columns=["aduana", "nombre", "mes_num", "monto"])
+        escenario = str(r.get("ESCENARIO / CONDICION") or "").strip().upper()
+        fracciones = {b: float(pd.to_numeric(r.get(b), errors="coerce") or 0.0) for b in BUCKETS_PERSONAL_CC}
+        reglas.setdefault(nombre_norm, []).append({"escenario": escenario, "fracciones": fracciones})
+    return reglas
+
+def _fracciones_personal_cc(nombre_norm, reglas, tmm_tiene_ingresos):
+    """Regresa el dict de fracciones a aplicar, o None si Personal por CC
+    no trae una regla USABLE para esta persona: no esta en la hoja, su
+    unica fila es Pendiente/No aplica (fracciones en 0), o es un escenario
+    condicional que no sabemos resolver (ej. una rotacion sin calendario
+    confirmado) -- en cualquiera de esos casos el llamador cae a usar el
+    Departamento real como respaldo."""
+    filas = reglas.get(nombre_norm)
+    if not filas:
+        return None
+    if len(filas) == 1:
+        fracciones = filas[0]["fracciones"]
+    else:
+        fracciones = None
+        for fila in filas:
+            if "TMM > 0" in fila["escenario"] and tmm_tiene_ingresos:
+                fracciones = fila["fracciones"]
+            elif "TMM <= 0" in fila["escenario"] and not tmm_tiene_ingresos:
+                fracciones = fila["fracciones"]
+    if not fracciones or not any(v > 0 for v in fracciones.values()):
+        return None
+    return fracciones
+
+def _aduanas_reales_del_mes(mes_num):
+    """Aduanas 'de verdad' (las que ya existen en Emitidas/Recibidas de ese
+    mes) -- se usan como RESPALDO del Departamento solo cuando Personal por
+    CC no trae una regla usable para esa persona (el usuario confirmo que
+    Personal por CC manda siempre que la tenga, 2026-11-25, tras ver que 17
+    de 65 personas revisadas tienen un Departamento real valido que no
+    coincide con su regla -- ej. 21 personas marcadas 'TOLUCA' en nomina
+    que Personal por CC reparte entre otras aduanas). Tambien regresa si
+    TMM tuvo Emitidas > 0 ese mes, para resolver el escenario condicional
+    de Personal por CC."""
+    mes_num_a_clave = {cfg["mes_num"]: clave for clave, cfg in PERIODOS.items()}
+    clave = mes_num_a_clave.get(mes_num)
+    if not clave:
+        return set(), False
+    em = _cargar_emitidas_periodo(clave)
+    rec = _cargar_recibidas_periodo(clave)
+    aduanas = set(em["aduana"].dropna()) | set(rec["aduana"].dropna())
+    tmm_tiene_ingresos = float(em.loc[em["aduana"] == "TMM", "importe"].sum()) > 0
+    return aduanas, tmm_tiene_ingresos
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _construir_sueldos_desde_cierre(mes_num):
-    """Combina el detalle de load_sueldos() (9 componentes de la Ficha
-    Tecnica, por quincena) con el reparto por aduana de
-    load_cierre_sueldos() para el mes vigente: el monto de Cierre fija el
-    total real de cada (persona, aduana); los 9 componentes se escalan
-    proporcionalmente a la fraccion que ese monto representa del sueldo
-    completo de la persona ese mes (sumando sus quincenas). Un empleado
-    que SI esta en Sueldos pero NO aparece en ninguna hoja de Cierre para
-    este mes se deja con su Departamento de siempre, para no perderlo del
-    tablero.
-    Cacheada por mes_num (no recibe DataFrames como argumento, los pide
-    ella misma a load_sueldos/load_cierre_sueldos, que ya estan cacheados)
-    para que cambiar el filtro de Aduana en el header -- que no afecta
-    nada de esto -- no dispare de nuevo este merge fila por fila en Python
-    (reportado por el usuario, 2026-11-24: "cuando cambio por aduana se
-    tarda demasiado")."""
+def _construir_sueldos_por_aduana(mes_num):
+    """Reparte Sueldos por aduana sin depender de que alguien lo llene a
+    mano en un Cierre (reemplaza _construir_sueldos_desde_cierre /
+    load_cierre_sueldos, 2026-11-25). Prioridad confirmada con el usuario
+    tras encontrar 17 casos de conflicto en agosto (ver
+    _aduanas_reales_del_mes):
+      1. Si Personal por CC trae una regla usable para la persona (fraccion
+         > 0 en algun cubo), esa manda SIEMPRE -- aunque el Departamento de
+         Sueldos ya sea una aduana real distinta.
+      2. Si no, se usa el Departamento de Sueldos tal cual, siempre que ya
+         sea una aduana real de Emitidas/Recibidas de ese mes (esto es lo
+         que captura que alguien cambie de aduana de un mes a otro sin
+         tocar Personal por CC).
+      3. Si ninguna de las dos aplica (no esta en la hoja y su
+         Departamento tampoco es una aduana real), se deja bajo "SIN
+         ADUANA" -- no se pierde del Total de Nomina pero se nota en el
+         treemap que le falta su regla de reparto.
+    Los 9 componentes de percepcion se escalan proporcionalmente a cada
+    fraccion aplicada. Cacheada por mes_num (no recibe DataFrames como
+    argumento) para que cambiar el filtro de Aduana en el header no
+    dispare de nuevo este cruce fila por fila en Python (reportado por el
+    usuario, 2026-11-24: 'cuando cambio por aduana se tarda demasiado')."""
     sueldos_f = load_sueldos(mes_num)
-    cierre_df = load_cierre_sueldos()
-    cierre_mes = cierre_df[cierre_df["mes_num"] == mes_num]
-    if cierre_mes.empty:
+    if sueldos_f.empty:
         return sueldos_f
     cols_num = [c for c, _ in COLS_NOMINA]
     base = sueldos_f.copy()
@@ -735,36 +749,27 @@ def _construir_sueldos_desde_cierre(mes_num):
     agg["aduana"] = "first"
     resumen = base.groupby("nombre_norm").agg(agg)
 
-    filas = []
-    for nombre_norm, grp in cierre_mes.groupby("nombre"):
-        if nombre_norm not in resumen.index:
-            continue
-        fila_base = resumen.loc[nombre_norm]
-        total_real = fila_base["total"]
-        if not total_real:
-            continue
-        # Si la suma de los montos de Cierre de esta persona (entre todas
-        # sus aduanas ese mes) supera su sueldo real completo -- posible
-        # inconsistencia entre las dos fuentes -- se escala hacia abajo
-        # para no inflar el total de Sueldos de la empresa.
-        suma_cierre = grp["monto"].sum()
-        escala = min(1.0, total_real / suma_cierre) if suma_cierre > total_real else 1.0
-        for _, r in grp.iterrows():
-            fraccion = (r["monto"] * escala) / total_real
-            fila = {"nombre": nombre_norm, "aduana": r["aduana"], "total": r["monto"] * escala}
-            for c in cols_num:
-                fila[c] = fila_base[c] * fraccion
-            filas.append(fila)
+    aduanas_reales, tmm_tiene_ingresos = _aduanas_reales_del_mes(mes_num)
+    reglas_cc = load_personal_cc()
 
-    nombres_con_cierre = set(cierre_mes["nombre"])
+    filas = []
     for nombre_norm, fila_base in resumen.iterrows():
-        if nombre_norm in nombres_con_cierre:
+        fracciones = _fracciones_personal_cc(nombre_norm, reglas_cc, tmm_tiene_ingresos)
+        if fracciones:
+            for bucket, fraccion in fracciones.items():
+                if fraccion <= 0:
+                    continue
+                fila = {"nombre": nombre_norm, "aduana": bucket, "total": fila_base["total"] * fraccion}
+                for c in cols_num:
+                    fila[c] = fila_base[c] * fraccion
+                filas.append(fila)
             continue
-        fila = {"nombre": nombre_norm, "aduana": fila_base["aduana"], "total": fila_base["total"]}
+        aduana = fila_base["aduana"] if fila_base["aduana"] in aduanas_reales else "SIN ADUANA"
+        fila = {"nombre": nombre_norm, "aduana": aduana, "total": fila_base["total"]}
         for c in cols_num:
             fila[c] = fila_base[c]
         filas.append(fila)
-    return pd.DataFrame(filas).reset_index(drop=True)
+    return pd.DataFrame(filas, columns=["nombre", "aduana", "total"] + cols_num).reset_index(drop=True)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def load_costos_referencia(periodo):
@@ -967,7 +972,7 @@ def _cargar_rango(claves_periodos):
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _sueldos_rango(meses_num):
-    return pd.concat([_construir_sueldos_desde_cierre(m) for m in meses_num], ignore_index=True)
+    return pd.concat([_construir_sueldos_por_aduana(m) for m in meses_num], ignore_index=True)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _costos_rango(claves_periodos):
@@ -1040,7 +1045,7 @@ try:
             _cfg.get("imile_monto2_desde"), _cfg.get("imile_monto1_desde"),
         ]
     _archivos_compartidos = [DRIVE_SHEET_IDS[k] for k in (
-        "sueldos", "honorarios_aa", "presupuestos_2026", "cierre_carga_aerea",
+        "sueldos", "honorarios_aa", "presupuestos_2026", "personal_por_cc",
         "efectivale", "amex_alejandro", "amex_josefa", "amex_angelica")]
     _prefetch_drive(_archivos_por_periodo + _archivos_compartidos)
 
