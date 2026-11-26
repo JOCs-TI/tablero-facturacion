@@ -224,12 +224,19 @@ def _prefetch_drive(file_ids):
     la suma de todas (pedido del usuario, 2026-11-25: "quiero optimizar
     todos los tiempos de espera"). max_workers se queda deliberadamente
     moderado (6) -- con más de ~10 a la vez, docs.google.com empieza a
-    cortar conexiones con error SSL en vez de responder más rápido."""
+    cortar conexiones con error SSL en vez de responder más rápido.
+    Si algun archivo agota sus 3 intentos (pasa seguido cuando Google
+    tira error SSL en TODA la tanda, no solo en "unos pocos"), esta
+    funcion NO debe tronar la pagina entera -- es solo una optimizacion,
+    cada loader de abajo ya reintenta por su cuenta al pedir ese mismo
+    file_id de nuevo (cache-miss) si el prefetch no lo dejo listo."""
     ids_unicos = sorted({fid for fid in file_ids if fid})
     if not ids_unicos:
         return
     with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(ids_unicos))) as ex:
-        list(ex.map(_descargar_sheet_drive, ids_unicos))
+        futuros = {ex.submit(_descargar_sheet_drive, fid): fid for fid in ids_unicos}
+        for futuro in concurrent.futures.as_completed(futuros):
+            futuro.exception()
 
 # Julio nombra esta aduana "IMILE" a secas en vez de "IMILE AIFA" (archivos
 # de meses mas recientes ya usan el nombre completo) -- sin este alias, el
